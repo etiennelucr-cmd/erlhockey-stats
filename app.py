@@ -1,4 +1,4 @@
-"""ErlHockey Stats V5 — statistiques, picks et tendances NHL."""
+"""ErlHockey Stats V6 — statistiques, picks et tendances NHL."""
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
@@ -123,6 +123,8 @@ def recent_player_form():
                COUNT(*) AS matchs, SUM(points) AS points_5,
                SUM(goals) AS buts_5,
                COUNT(*) FILTER (WHERE points > 0) AS matchs_avec_point,
+               SUM(CASE WHEN rn <= 2 THEN points ELSE 0 END) AS points_2,
+               COUNT(*) FILTER (WHERE rn <= 2 AND points > 0) AS matchs_avec_point_2,
                STRING_AGG(points::text, ' - ' ORDER BY rn) AS points_par_match
         FROM ranked WHERE rn <= 5 GROUP BY player_id
         HAVING COUNT(*) = 5
@@ -228,7 +230,7 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V5")
+    st.caption("NHL • Stats V6")
     page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
                                  "🎯 Buts 5/5","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"])
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
@@ -322,31 +324,78 @@ try:
         """, dates)
         show_table(recent.to_dict('records'))
     elif page=="🎯 NHL Picks":
-        st.caption("Sélection statistique de joueurs susceptibles d'obtenir au moins un point lors des matchs NHL à venir.")
-        st.info("Classement heuristique basé sur les cinq derniers matchs terminés. Les signaux ne sont pas des probabilités calibrées, ni des garanties de résultat.")
+        st.caption("Joueurs à surveiller pour obtenir au moins un point lors des prochains matchs NHL.")
+        st.info("Classement expérimental fondé sur les cinq derniers matchs et la forme des deux plus récents. Ce score n'est pas une probabilité de réussite ni un conseil de pari.")
         upcoming = upcoming_games(2)
         if not upcoming:
             st.info("Aucun match programmé aujourd'hui ou demain dans les données NHL.")
         else:
-            form = recent_player_form()
-            rows = []
+            # Un match peut apparaître sur deux dates locales selon le calendrier NHL.
+            unique_games = {}
+            now_utc = datetime.now(timezone.utc)
             for g in upcoming:
-                away = g.get('awayTeam', {}).get('abbrev', '?')
-                home = g.get('homeTeam', {}).get('abbrev', '?')
-                for _, p in form[form['equipe'].isin((away, home))].iterrows():
-                    played = int(p['matchs_avec_point'])
-                    if played < 3:
-                        continue
-                    signal = 'Fort' if played == 5 else ('Modéré' if played == 4 else 'À surveiller')
-                    rows.append({'Heure (Paris)': game_time(g), 'Match': f'{away} @ {home}',
-                                 'Joueur': p['joueur'], 'Équipe': p['equipe'],
-                                 'Signal': signal, 'Matchs avec point / 5': played,
-                                 'Points / 5': int(p['points_5']),
-                                 'Points par match (récent → ancien)': p['points_par_match']})
-            rows.sort(key=lambda r: (-r['Matchs avec point / 5'], -r['Points / 5'], r['Match']))
-            st.metric('Joueurs repérés', len(rows))
-            show_table(rows[:80])
-            st.caption("Les compositions, blessures, adversaires et cotes ne sont pas intégrés. Un joueur peut ne pas participer au match.")
+                try:
+                    start = datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00'))
+                except (KeyError, ValueError, AttributeError):
+                    continue
+                if start >= now_utc:
+                    unique_games[str(g.get('id') or (g.get('startTimeUTC'),
+                                 g.get('awayTeam', {}).get('abbrev'),
+                                 g.get('homeTeam', {}).get('abbrev')))] = g
+            upcoming = sorted(unique_games.values(), key=lambda g: g.get('startTimeUTC', ''))
+            if not upcoming:
+                st.info("Aucun match futur dans la période analysée.")
+            else:
+                match_options = ['Tous les matchs'] + [
+                    f"{game_time(g)} — {g.get('awayTeam', {}).get('abbrev', '?')} @ {g.get('homeTeam', {}).get('abbrev', '?')}"
+                    for g in upcoming
+                ]
+                left, middle, right = st.columns(3)
+                with left:
+                    display_count = st.selectbox('Nombre de picks', [10, 20, 'Tous'], index=0)
+                with middle:
+                    selected_match = st.selectbox('Match à analyser', match_options)
+                with right:
+                    min_regular = st.selectbox('Régularité minimale', [3, 4, 5], index=0,
+                                               format_func=lambda n: f'{n}/5 matchs avec point')
+                selected_games = upcoming if selected_match == 'Tous les matchs' else [
+                    upcoming[match_options.index(selected_match) - 1]
+                ]
+                form = recent_player_form()
+                rows = []
+                for g in selected_games:
+                    away = g.get('awayTeam', {}).get('abbrev', '?')
+                    home = g.get('homeTeam', {}).get('abbrev', '?')
+                    for _, p in form[form['equipe'].isin((away, home))].iterrows():
+                        played = int(p['matchs_avec_point'])
+                        if played < min_regular:
+                            continue
+                        points = int(p['points_5'])
+                        recent_points = int(p['points_2'])
+                        recent_games = int(p['matchs_avec_point_2'])
+                        # Score heuristique : régularité dominante, puis volume et forme récente.
+                        score = played * 10 + min(points, 15) * 2 + min(recent_points, 8) * 3 + recent_games * 4
+                        signal = ('Fort' if played == 5 and recent_games == 2 and points >= 7
+                                  else 'Modéré' if played >= 4 and recent_games >= 1
+                                  else 'À surveiller')
+                        rows.append({
+                            'Heure (Paris)': game_time(g), 'Match': f'{away} @ {home}',
+                            'Joueur': p['joueur'], 'Équipe': p['equipe'],
+                            'Signal': signal, 'Score indicatif': score,
+                            'Matchs avec point / 5': played, 'Points / 5': points,
+                            'Points / 2 derniers': recent_points,
+                            'Points par match (récent → ancien)': p['points_par_match']
+                        })
+                rows.sort(key=lambda r: (-r['Score indicatif'], -r['Matchs avec point / 5'],
+                                         -r['Points / 5'], r['Joueur']))
+                st.metric('Joueurs repérés', len(rows))
+                visible = rows if display_count == 'Tous' else rows[:display_count]
+                st.caption(f"{len(visible)} picks affichés sur {len(rows)} joueurs repérés. "
+                           "Score = 10 × matchs avec point + 2 × points sur 5 matchs (plafond 15) "
+                           "+ 3 × points sur 2 matchs (plafond 8) + 4 × matchs avec point sur 2.")
+                show_table(visible)
+                st.caption("Les blessures, les compositions, les gardiens et les cotes ne sont pas intégrés. "
+                           "Un joueur sélectionné peut ne pas participer au match.")
     elif page=="👤 Statistiques joueurs":
         st.caption("Recherche parmi les joueurs des listes de leaders NHL ; recherche exhaustive à venir.")
         pool=candidates()
@@ -398,4 +447,4 @@ except Exception as e:
     st.caption(f"Détail technique : {type(e).__name__}: {e}")
 
 st.divider()
-st.caption("ErlHockey Stats V5 • Collecte planifiée via GitHub Actions")
+st.caption("ErlHockey Stats V6 • Collecte planifiée via GitHub Actions")
