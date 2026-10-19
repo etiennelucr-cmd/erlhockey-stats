@@ -1,4 +1,4 @@
-"""ErlHockey Stats V9 — statistiques, picks et tendances NHL."""
+"""ErlHockey Stats V10 — statistiques, picks et tendances NHL."""
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
@@ -275,15 +275,35 @@ def matches_table(games):
                      "Domicile":home.get("abbrev","?"),"Score dom.":home.get("score","—"),"État":g.get("gameState","?")})
     return rows
 
+def game_player_details(game_id):
+    """Statistiques enregistrées pour une rencontre terminée."""
+    return db_query("""
+        SELECT p.player_id, p.player_name AS joueur, p.team AS equipe,
+               p.goals AS buts, p.assists AS passes, p.points AS points
+        FROM nhl_player_games p
+        JOIN nhl_games g ON g.game_id = p.game_id
+        WHERE p.game_id = %s AND g.game_state IN ('OFF', 'FINAL')
+        ORDER BY p.points DESC, p.goals DESC, p.player_name
+    """, (int(game_id),))
+
+
+def boxscore_team_details(game_id):
+    """Données complémentaires officielles, facultatives."""
+    data = get_json(f"gamecenter/{int(game_id)}/boxscore")
+    away = data.get('awayTeam') or {}
+    home = data.get('homeTeam') or {}
+    return away, home
+
+
 def show_table(rows, columns=None):
     if rows: st.dataframe(pd.DataFrame(rows)[columns] if columns else pd.DataFrame(rows), hide_index=True, use_container_width=True)
     else: st.info("Aucun résultat dans l'échantillon analysé.")
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V9")
+    st.caption("NHL • Stats V10")
     page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
-                                 "🎯 Buts 5/5","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"])
+                                 "🎯 Buts 5/5","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"], key="navigation_page")
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
         get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); perfect_five_streaks.clear(); recent_player_form.clear(); recent_team_form.clear(); db_query.clear(); st.rerun()
     st.caption("Données publiques NHL. Les statistiques peuvent être différées.")
@@ -522,7 +542,7 @@ try:
         if roster.empty:
             st.info("Aucun joueur enregistré pour le moment dans Supabase.")
         else:
-            q = st.text_input("Rechercher un joueur", placeholder="Ex. McDavid, Kaprizov ou EDM")
+            q = st.text_input("Rechercher un joueur", placeholder="Ex. McDavid, Kaprizov ou EDM", key="player_search")
             matching = roster[
                 roster['joueur'].astype(str).str.contains(q, case=False, regex=False, na=False)
                 | roster['equipe'].astype(str).str.contains(q, case=False, regex=False, na=False)
@@ -575,8 +595,86 @@ try:
                     }), hide_index=True, use_container_width=True)
                     st.caption("Les totaux correspondent à l'historique Supabase collecté, pas nécessairement à toute la saison NHL.")
     elif page=="📅 Matchs NHL":
-        day=st.date_input("Date des matchs",value=today)
-        show_table(matches_table(matches_for_day(day)))
+        st.caption("Calendrier officiel NHL et statistiques des matchs terminés enregistrées dans Supabase.")
+        day = st.date_input("Date des matchs", value=today, key="nhl_match_date")
+        games = matches_for_day(day)
+        if not games:
+            st.info("Aucun match NHL répertorié à cette date.")
+        else:
+            st.metric("Rencontres", len(games))
+            show_table(matches_table(games))
+            options = list(range(len(games)))
+            def game_label(index):
+                g = games[index]
+                away = g.get('awayTeam') or {}
+                home = g.get('homeTeam') or {}
+                return (f"{game_time(g)} · {away.get('abbrev', '?')} @ "
+                        f"{home.get('abbrev', '?')} · {g.get('gameState', '?')}")
+            choice = st.selectbox("Sélectionner une rencontre", options,
+                                  format_func=game_label, key="selected_nhl_game")
+            game = games[choice]
+            away = game.get('awayTeam') or {}
+            home = game.get('homeTeam') or {}
+            away_code = away.get('abbrev', '?')
+            home_code = home.get('abbrev', '?')
+            state = game.get('gameState', '')
+            st.subheader(f"{away_code} @ {home_code}")
+            a, b, c = st.columns(3)
+            a.metric(f"{away_code} (extérieur)", away.get('score', '—'))
+            b.metric(f"{home_code} (domicile)", home.get('score', '—'))
+            c.metric("État du match", state or '—')
+            if state not in ('OFF', 'FINAL'):
+                st.info("Ce match n'est pas encore terminé. Les statistiques définitives seront disponibles après la rencontre et sa collecte.")
+            else:
+                game_id = game.get('id')
+                if not game_id:
+                    st.warning("Identifiant du match indisponible.")
+                else:
+                    st.subheader("📊 Statistiques des équipes")
+                    try:
+                        away_stats, home_stats = boxscore_team_details(game_id)
+                        shots_away = away_stats.get('sog')
+                        shots_home = home_stats.get('sog')
+                        if shots_away is not None or shots_home is not None:
+                            a, b = st.columns(2)
+                            a.metric(f"Tirs cadrés · {away_code}", shots_away if shots_away is not None else '—')
+                            b.metric(f"Tirs cadrés · {home_code}", shots_home if shots_home is not None else '—')
+                        else:
+                            st.caption("Tirs cadrés non disponibles pour ce match.")
+                    except (requests.RequestException, ValueError, KeyError):
+                        st.caption("Statistiques complémentaires des équipes momentanément indisponibles.")
+                    st.subheader("⭐ Joueurs ayant obtenu des points")
+                    details = game_player_details(game_id)
+                    if details.empty:
+                        st.info("Aucune statistique de joueur enregistrée pour ce match dans Supabase. La prochaine collecte peut compléter ces données.")
+                    else:
+                        scorers = details[details['points'] > 0].copy()
+                        if scorers.empty:
+                            st.info("Aucun joueur avec point dans les données collectées.")
+                        else:
+                            st.dataframe(scorers[['joueur', 'equipe', 'buts', 'passes', 'points']].rename(columns={
+                                'joueur':'Joueur', 'equipe':'Équipe', 'buts':'Buts',
+                                'passes':'Passes', 'points':'Points'
+                            }), hide_index=True, use_container_width=True)
+                        st.subheader("🥅 Buteurs du match")
+                        goals = details[details['buts'] > 0]
+                        show_table(goals[['joueur','equipe','buts']].rename(columns={
+                            'joueur':'Joueur','equipe':'Équipe','buts':'Buts'
+                        }).to_dict('records'))
+                        with st.expander("Voir tous les joueurs enregistrés"):
+                            st.dataframe(details.drop(columns=['player_id']).rename(columns={
+                                'joueur':'Joueur','equipe':'Équipe','buts':'Buts',
+                                'passes':'Passes','points':'Points'
+                            }), hide_index=True, use_container_width=True)
+                        st.subheader("👤 Accéder aux statistiques d'un joueur")
+                        player_options = details.drop_duplicates('player_id').sort_values('joueur')
+                        selected_player = st.selectbox("Joueur du match", player_options.index.tolist(),
+                            format_func=lambda idx: f"{player_options.loc[idx, 'joueur']} ({player_options.loc[idx, 'equipe']})",
+                            key="match_player_choice")
+                        if st.button("Voir la fiche du joueur", key="go_to_player_stats"):
+                            st.session_state['player_search'] = str(player_options.loc[selected_player, 'joueur'])
+                            st.session_state['navigation_page'] = '👤 Statistiques joueurs'
+                            st.rerun()
     elif page=="📊 Historique":
         st.caption("Données NHL conservées dans Supabase par la collecte automatique.")
         try:
@@ -609,4 +707,4 @@ except Exception as e:
     st.caption(f"Détail technique : {type(e).__name__}: {e}")
 
 st.divider()
-st.caption("ErlHockey Stats V9 • Collecte planifiée via GitHub Actions")
+st.caption("ErlHockey Stats V10 • Collecte planifiée via GitHub Actions")
