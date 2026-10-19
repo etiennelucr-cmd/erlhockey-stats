@@ -1,4 +1,4 @@
-"""ErlHockey Stats V1 — interface NHL en lecture seule, sans secrets requis."""
+"""ErlHockey Stats V5 — statistiques, picks et tendances NHL."""
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
@@ -106,6 +106,88 @@ def perfect_five_streaks(statistic):
         ORDER BY points_total DESC, buts_total DESC, joueur
     """)
 
+@st.cache_data(ttl=300, show_spinner=False)
+def recent_player_form():
+    """Les cinq derniers matchs terminés par joueur, toutes équipes confondues."""
+    return db_query("""
+        WITH ranked AS (
+            SELECT p.player_id, p.player_name, p.team, p.points, p.goals,
+                   ROW_NUMBER() OVER (PARTITION BY p.player_id
+                       ORDER BY p.game_date DESC, p.game_id DESC) AS rn
+            FROM nhl_player_games p
+            JOIN nhl_games g ON g.game_id = p.game_id
+            WHERE g.game_state IN ('OFF','FINAL')
+        )
+        SELECT player_id, MAX(player_name) AS joueur,
+               (ARRAY_AGG(team ORDER BY rn))[1] AS equipe,
+               COUNT(*) AS matchs, SUM(points) AS points_5,
+               SUM(goals) AS buts_5,
+               COUNT(*) FILTER (WHERE points > 0) AS matchs_avec_point,
+               STRING_AGG(points::text, ' - ' ORDER BY rn) AS points_par_match
+        FROM ranked WHERE rn <= 5 GROUP BY player_id
+        HAVING COUNT(*) = 5
+    """)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def recent_team_form():
+    """Résultats des cinq derniers matchs terminés par équipe."""
+    return db_query("""
+        WITH team_games AS (
+            SELECT game_id, game_date, home_team AS team,
+                   CASE WHEN home_score > away_score THEN 1 ELSE 0 END AS win
+            FROM nhl_games WHERE game_state IN ('OFF','FINAL')
+              AND home_score IS NOT NULL AND away_score IS NOT NULL
+            UNION ALL
+            SELECT game_id, game_date, away_team AS team,
+                   CASE WHEN away_score > home_score THEN 1 ELSE 0 END AS win
+            FROM nhl_games WHERE game_state IN ('OFF','FINAL')
+              AND home_score IS NOT NULL AND away_score IS NOT NULL
+        ), ranked AS (
+            SELECT team, win, ROW_NUMBER() OVER (
+                PARTITION BY team ORDER BY game_date DESC, game_id DESC) AS rn
+            FROM team_games
+        )
+        SELECT team, COUNT(*) AS matchs, SUM(win) AS victoires
+        FROM ranked WHERE rn <= 5 GROUP BY team
+    """)
+
+def upcoming_games(days=2):
+    result = []
+    for offset in range(days):
+        day = datetime.now(PARIS).date() + timedelta(days=offset)
+        for g in matches_for_day(day):
+            if g.get('gameState') not in ('OFF','FINAL','LIVE','CRIT'):
+                result.append(g)
+    return result
+
+def game_time(g):
+    try:
+        return datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00')).astimezone(PARIS).strftime('%d/%m %H:%M')
+    except (KeyError, ValueError, AttributeError):
+        return '—'
+
+def team_predictions(games):
+    form = recent_team_form()
+    stats = {str(r['team']): r for _, r in form.iterrows()}
+    rows = []
+    for g in games:
+        away = g.get('awayTeam', {}).get('abbrev', '?')
+        home = g.get('homeTeam', {}).get('abbrev', '?')
+        a, h = stats.get(away), stats.get(home)
+        if a is None or h is None or min(int(a['matchs']), int(h['matchs'])) < 3:
+            signal = 'Données insuffisantes'
+            reason = 'Moins de 3 matchs récents pour une équipe'
+        else:
+            av, hv = int(a['victoires']), int(h['victoires'])
+            if abs(av - hv) <= 1:
+                signal = 'Match serré / prolongation possible'
+            else:
+                signal = f'Avantage {home if hv > av else away}'
+            reason = f'{away} : {av}/{int(a["matchs"])} victoires ; {home} : {hv}/{int(h["matchs"])}'
+        rows.append({'Heure (Paris)': game_time(g), 'Match': f'{away} @ {home}',
+                     'Tendance': signal, 'Forme récente': reason})
+    return rows
+
 def player_name(p):
     def part(v): return v.get("default", "") if isinstance(v, dict) else str(v or "")
     return (part(p.get("firstName")) + " " + part(p.get("lastName"))).strip()
@@ -146,11 +228,11 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V4")
+    st.caption("NHL • Stats V5")
     page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
-                                 "🎯 Buts 5/5","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"])
+                                 "🎯 Buts 5/5","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"])
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
-        get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); perfect_five_streaks.clear(); db_query.clear(); st.rerun()
+        get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); perfect_five_streaks.clear(); recent_player_form.clear(); recent_team_form.clear(); db_query.clear(); st.rerun()
     st.caption("Données publiques NHL. Les statistiques peuvent être différées.")
 
 st.title(page)
@@ -166,7 +248,14 @@ try:
         a.metric("Matchs du jour",len(games)); b.metric("Terminés",completed); c.metric("En cours",live)
         st.subheader("📅 Matchs du jour")
         show_table(matches_table(games))
-        st.info("V1 : les pages affichent les données NHL disponibles. L'historique permanent et la collecte 24 h/24 seront ajoutés ensuite.")
+        st.subheader("🔮 Prédictions — matchs du jour")
+        st.caption("Tendances indicatives fondées uniquement sur les victoires des 5 derniers matchs enregistrés. Ce ne sont pas des probabilités fiables.")
+        future = [g for g in games if g.get('gameState') not in ('OFF','FINAL','LIVE','CRIT')]
+        if future:
+            show_table(team_predictions(future))
+        else:
+            st.info("Aucun match à venir aujourd'hui à analyser.")
+        st.caption("En NHL, il n'y a pas de match nul au résultat final : une égalité après 60 minutes mène à la prolongation ou aux tirs au but. La mention « match serré » n'est pas un pronostic de nul réglementaire.")
     elif page=="🥅 Buts 3 sur 5":
         st.caption("Joueurs ayant marqué au moins un but dans 3 de leurs 5 derniers matchs terminés enregistrés dans Supabase.")
         st.info("Calcul fondé sur les matchs disponibles dans l'historique collecté (fenêtre actuelle limitée). Les joueurs ayant moins de 5 matchs enregistrés sont exclus.")
@@ -220,18 +309,44 @@ try:
         rows.sort(key=lambda r:(r["Points (5 matchs)"],r["Buts (5 matchs)"]),reverse=True)
         show_table(rows,["Joueur","Équipe","Buts (5 matchs)","Points (5 matchs)","Matchs avec point","Matchs avec but"])
     elif page=="⭐ Points 24 h":
-        st.caption("Joueurs ayant inscrit au moins 2 points dans un match terminé sur les dernières 24 heures (heure de fin approximée par la date du match).")
-        st.warning("V1 : le filtrage repose sur la date des matchs, pas sur leur heure de fin exacte.")
-        with st.spinner("Analyse des matchs récents…"):
-            recent=[]
-            for p in candidates():
-                try:
-                    for g in game_log(p["id"])[:3]:
-                        if g.get("gameDate","") in {today.isoformat(),(today-timedelta(days=1)).isoformat()}:
-                            pts=int(g.get("goals") or 0)+int(g.get("assists") or 0)
-                            if pts>=2: recent.append({"Joueur":player_name(p),"Équipe":p.get("teamAbbrev",""),"Date":g.get("gameDate"),"Points":pts,"Buts":g.get("goals",0),"Passes":g.get("assists",0)})
-                except (requests.RequestException, ValueError): continue
-        show_table(sorted(recent,key=lambda r:r["Points"],reverse=True))
+        st.caption("Joueurs avec au moins 2 points lors d'un match terminé récemment, parmi tous les joueurs enregistrés dans Supabase.")
+        st.warning("Fenêtre approximative : matchs datés d'aujourd'hui ou d'hier (heure de Paris), pas une mesure exacte des 24 heures depuis la fin du match.")
+        dates = (today.isoformat(), (today-timedelta(days=1)).isoformat())
+        recent = db_query("""
+            SELECT p.player_name AS "Joueur", p.team AS "Équipe", p.game_date AS "Date",
+                   p.points AS "Points", p.goals AS "Buts", p.assists AS "Passes"
+            FROM nhl_player_games p JOIN nhl_games g ON g.game_id = p.game_id
+            WHERE g.game_state IN ('OFF','FINAL') AND p.points >= 2
+              AND p.game_date IN (%s, %s)
+            ORDER BY p.points DESC, p.game_date DESC, p.player_name
+        """, dates)
+        show_table(recent.to_dict('records'))
+    elif page=="🎯 NHL Picks":
+        st.caption("Sélection statistique de joueurs susceptibles d'obtenir au moins un point lors des matchs NHL à venir.")
+        st.info("Classement heuristique basé sur les cinq derniers matchs terminés. Les signaux ne sont pas des probabilités calibrées, ni des garanties de résultat.")
+        upcoming = upcoming_games(2)
+        if not upcoming:
+            st.info("Aucun match programmé aujourd'hui ou demain dans les données NHL.")
+        else:
+            form = recent_player_form()
+            rows = []
+            for g in upcoming:
+                away = g.get('awayTeam', {}).get('abbrev', '?')
+                home = g.get('homeTeam', {}).get('abbrev', '?')
+                for _, p in form[form['equipe'].isin((away, home))].iterrows():
+                    played = int(p['matchs_avec_point'])
+                    if played < 3:
+                        continue
+                    signal = 'Fort' if played == 5 else ('Modéré' if played == 4 else 'À surveiller')
+                    rows.append({'Heure (Paris)': game_time(g), 'Match': f'{away} @ {home}',
+                                 'Joueur': p['joueur'], 'Équipe': p['equipe'],
+                                 'Signal': signal, 'Matchs avec point / 5': played,
+                                 'Points / 5': int(p['points_5']),
+                                 'Points par match (récent → ancien)': p['points_par_match']})
+            rows.sort(key=lambda r: (-r['Matchs avec point / 5'], -r['Points / 5'], r['Match']))
+            st.metric('Joueurs repérés', len(rows))
+            show_table(rows[:80])
+            st.caption("Les compositions, blessures, adversaires et cotes ne sont pas intégrés. Un joueur peut ne pas participer au match.")
     elif page=="👤 Statistiques joueurs":
         st.caption("Recherche parmi les joueurs des listes de leaders NHL ; recherche exhaustive à venir.")
         pool=candidates()
@@ -283,4 +398,4 @@ except Exception as e:
     st.caption(f"Détail technique : {type(e).__name__}: {e}")
 
 st.divider()
-st.caption("ErlHockey Stats V4 • Collecte planifiée via GitHub Actions")
+st.caption("ErlHockey Stats V5 • Collecte planifiée via GitHub Actions")
