@@ -1,4 +1,4 @@
-"""ErlHockey Stats V6 — statistiques, picks et tendances NHL."""
+"""ErlHockey Stats V6.1 — statistiques, picks et tendances NHL."""
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
@@ -230,7 +230,7 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V6")
+    st.caption("NHL • Stats V6.1")
     page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
                                  "🎯 Buts 5/5","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"])
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
@@ -324,7 +324,7 @@ try:
         """, dates)
         show_table(recent.to_dict('records'))
     elif page=="🎯 NHL Picks":
-        st.caption("Joueurs à surveiller pour obtenir au moins un point lors des prochains matchs NHL.")
+        st.caption("Joueurs à surveiller pour obtenir au moins un point lors de leur prochain match NHL. Un seul pick par joueur.")
         st.info("Classement expérimental fondé sur les cinq derniers matchs et la forme des deux plus récents. Ce score n'est pas une probabilité de réussite ni un conseil de pari.")
         upcoming = upcoming_games(2)
         if not upcoming:
@@ -363,6 +363,8 @@ try:
                 ]
                 form = recent_player_form()
                 rows = []
+                seen_players = set()
+                # Les matchs sont chronologiques : conserver le prochain match de chaque joueur.
                 for g in selected_games:
                     away = g.get('awayTeam', {}).get('abbrev', '?')
                     home = g.get('homeTeam', {}).get('abbrev', '?')
@@ -370,6 +372,10 @@ try:
                         played = int(p['matchs_avec_point'])
                         if played < min_regular:
                             continue
+                        player_key = str(p['player_id'])
+                        if player_key in seen_players:
+                            continue
+                        seen_players.add(player_key)
                         points = int(p['points_5'])
                         recent_points = int(p['points_2'])
                         recent_games = int(p['matchs_avec_point_2'])
@@ -381,6 +387,7 @@ try:
                         rows.append({
                             'Heure (Paris)': game_time(g), 'Match': f'{away} @ {home}',
                             'Joueur': p['joueur'], 'Équipe': p['equipe'],
+                            'Adversaire': home if p['equipe'] == away else away,
                             'Signal': signal, 'Score indicatif': score,
                             'Matchs avec point / 5': played, 'Points / 5': points,
                             'Points / 2 derniers': recent_points,
@@ -447,4 +454,4 @@ except Exception as e:
     st.caption(f"Détail technique : {type(e).__name__}: {e}")
 
 st.divider()
-st.caption("ErlHockey Stats V6 • Collecte planifiée via GitHub Actions")
+st.caption("ErlHockey Stats V6.1 • Collecte planifiée via GitHub Actions")
