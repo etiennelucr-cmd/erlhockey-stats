@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import requests
 import pandas as pd
 import streamlit as st
+import psycopg
 
 st.set_page_config(page_title="ErlHockey Stats", page_icon="🏒", layout="wide")
 API = "https://api-web.nhle.com/v1"
@@ -31,6 +32,19 @@ def game_log(player_id):
     data = get_json(f"player/{player_id}/game-log/now")
     games = data.get("gameLog", [])
     return sorted([g for g in games if g.get("gameType", 2) == 2], key=lambda g:g.get("gameDate", ""), reverse=True)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def db_query(sql, params=()):
+    url = st.secrets.get("SUPABASE_DB_URL")
+    if not url:
+        raise RuntimeError("Secret SUPABASE_DB_URL absent")
+    with psycopg.connect(url, connect_timeout=15) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            return pd.DataFrame(cur.fetchall(), columns=[c.name for c in cur.description])
+
+def db_status():
+    return db_query("SELECT source, last_success_at, details FROM nhl_sync_status ORDER BY last_success_at DESC LIMIT 1")
 
 def player_name(p):
     def part(v): return v.get("default", "") if isinstance(v, dict) else str(v or "")
@@ -143,7 +157,27 @@ try:
         day=st.date_input("Date des matchs",value=today)
         show_table(matches_table(matches_for_day(day)))
     elif page=="📊 Historique":
-        st.info("Cette rubrique sera activée lors de la connexion à Supabase. Elle conservera les statistiques passées et l'évolution des séries.")
+        st.caption("Données NHL conservées dans Supabase par la collecte automatique.")
+        try:
+            status = db_status()
+            if not status.empty:
+                last = status.iloc[0]["last_success_at"]
+                st.info(f"Dernière collecte : {last.astimezone(PARIS):%d/%m/%Y %H:%M} (Paris) — {status.iloc[0]['details']}")
+            totals = db_query("SELECT (SELECT COUNT(*) FROM nhl_games) AS matchs, (SELECT COUNT(*) FROM nhl_player_games) AS joueurs")
+            a, b = st.columns(2)
+            a.metric("Matchs enregistrés", int(totals.iloc[0]["matchs"]))
+            b.metric("Statistiques joueurs", int(totals.iloc[0]["joueurs"]))
+            st.subheader("Matchs enregistrés")
+            games_db = db_query("SELECT game_date AS date, away_team AS exterieur, away_score AS score_ext, home_team AS domicile, home_score AS score_dom, game_state AS etat FROM nhl_games ORDER BY game_date DESC, game_id DESC LIMIT 250")
+            show_table(games_db.to_dict("records"))
+            st.subheader("Statistiques d'un joueur")
+            query = st.text_input("Rechercher un joueur", placeholder="Ex. McDavid")
+            if query.strip():
+                stats = db_query("SELECT game_date AS date, player_name AS joueur, team AS equipe, goals AS buts, assists AS passes, points FROM nhl_player_games WHERE player_name ILIKE %s ORDER BY game_date DESC LIMIT 100", (f"%{query.strip()}%",))
+                show_table(stats.to_dict("records"))
+        except Exception as exc:
+            st.error("Impossible de lire l'historique Supabase.")
+            st.caption(f"Détail : {type(exc).__name__}: {exc}")
     elif page=="🔔 Alertes Telegram":
         st.info("Connexion au bot Telegram prévue après la mise en place de la collecte permanente. Aucun message n'est envoyé depuis cette V1.")
 except requests.RequestException as e:
@@ -154,4 +188,4 @@ except Exception as e:
     st.caption(f"Détail technique : {type(e).__name__}: {e}")
 
 st.divider()
-st.caption("ErlHockey Stats V1 • Prototype NHL • Pas de surveillance 24 h/24 à ce stade")
+st.caption("ErlHockey Stats V2 • Collecte planifiée via GitHub Actions")
