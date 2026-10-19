@@ -76,6 +76,36 @@ def goals_three_of_five():
         ORDER BY matchs_avec_but DESC, buts_total DESC, points_total DESC, joueur
     """)
 
+@st.cache_data(ttl=300, show_spinner=False)
+def perfect_five_streaks(statistic):
+    """Joueurs avec un but ou un point dans chacun des cinq derniers matchs terminés."""
+    if statistic not in ("goals", "points"):
+        raise ValueError("Statistique inconnue")
+    return db_query(f"""
+        WITH ranked AS (
+            SELECT p.player_id, p.player_name, p.team, p.game_date,
+                   p.game_id, p.goals, p.points,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY p.player_id
+                       ORDER BY p.game_date DESC, p.game_id DESC
+                   ) AS rang
+            FROM nhl_player_games p
+            JOIN nhl_games g ON g.game_id = p.game_id
+            WHERE g.game_state IN ('OFF', 'FINAL')
+        )
+        SELECT player_id, MAX(player_name) AS joueur,
+               (ARRAY_AGG(team ORDER BY rang))[1] AS equipe,
+               COUNT(*) AS matchs_analyses,
+               SUM(goals) AS buts_total,
+               SUM(points) AS points_total,
+               STRING_AGG({statistic}::text, ' - ' ORDER BY rang) AS serie_par_match
+        FROM ranked
+        WHERE rang <= 5
+        GROUP BY player_id
+        HAVING COUNT(*) = 5 AND COUNT(*) FILTER (WHERE {statistic} > 0) = 5
+        ORDER BY points_total DESC, buts_total DESC, joueur
+    """)
+
 def player_name(p):
     def part(v): return v.get("default", "") if isinstance(v, dict) else str(v or "")
     return (part(p.get("firstName")) + " " + part(p.get("lastName"))).strip()
@@ -116,11 +146,11 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V3")
+    st.caption("NHL • Stats V4")
     page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
                                  "🎯 Buts 5/5","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"])
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
-        get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); st.rerun()
+        get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); perfect_five_streaks.clear(); db_query.clear(); st.rerun()
     st.caption("Données publiques NHL. Les statistiques peuvent être différées.")
 
 st.title(page)
@@ -152,7 +182,31 @@ try:
                 "points_total":"Points (5 matchs)", "buts_par_match":"Buts par match (récent → ancien)"
             })
             st.dataframe(results.drop(columns=["player_id"]), hide_index=True, use_container_width=True)
-    elif page in ("🔥 Points 5/5","🎯 Buts 5/5","📈 Séries 24 h"):
+    elif page in ("🔥 Points 5/5", "🎯 Buts 5/5"):
+        is_points = page == "🔥 Points 5/5"
+        statistic = "points" if is_points else "goals"
+        st.caption(
+            "Joueurs ayant obtenu au moins un point dans chacun de leurs cinq derniers matchs terminés."
+            if is_points else
+            "Joueurs ayant marqué au moins un but dans chacun de leurs cinq derniers matchs terminés."
+        )
+        st.info("Données Supabase : cinq matchs terminés requis par joueur. Calcul sur l'historique actuellement collecté.")
+        with st.spinner("Calcul des séries depuis Supabase…"):
+            results = perfect_five_streaks(statistic)
+        if results.empty:
+            st.info("Aucun joueur ne répond actuellement à ce critère dans les données enregistrées.")
+        else:
+            st.metric("Joueurs qualifiés", len(results))
+            results = results.rename(columns={
+                "joueur": "Joueur", "equipe": "Équipe",
+                "matchs_analyses": "Matchs analysés",
+                "buts_total": "Buts (5 matchs)",
+                "points_total": "Points (5 matchs)",
+                "serie_par_match": ("Points par match (récent → ancien)" if is_points
+                                    else "Buts par match (récent → ancien)")
+            })
+            st.dataframe(results.drop(columns=["player_id"]), hide_index=True, use_container_width=True)
+    elif page=="📈 Séries 24 h":
         st.caption("Analyse des joueurs présents dans les listes de leaders NHL, pas de l'ensemble des joueurs de la ligue.")
         with st.spinner("Analyse des cinq derniers matchs des joueurs sélectionnés…"):
             rows=[]
@@ -161,11 +215,8 @@ try:
                     s=five_game_stats(p)
                     if s: rows.append(s)
                 except (requests.RequestException, ValueError, KeyError): continue
-        if page=="🔥 Points 5/5": rows=[r for r in rows if r["Matchs avec point"]==5]
-        elif page=="🎯 Buts 5/5": rows=[r for r in rows if r["Matchs avec but"]==5]
-        else:
-            st.warning("V1 : série de points affichée ; le filtre 'match dans les prochaines 24 h' sera ajouté avec la collecte planifiée.")
-            rows=[r for r in rows if r["Matchs avec point"]>=3]
+        st.warning("V1 : série de points affichée ; le filtre 'match dans les prochaines 24 h' sera ajouté avec la collecte planifiée.")
+        rows=[r for r in rows if r["Matchs avec point"]>=3]
         rows.sort(key=lambda r:(r["Points (5 matchs)"],r["Buts (5 matchs)"]),reverse=True)
         show_table(rows,["Joueur","Équipe","Buts (5 matchs)","Points (5 matchs)","Matchs avec point","Matchs avec but"])
     elif page=="⭐ Points 24 h":
@@ -232,4 +283,4 @@ except Exception as e:
     st.caption(f"Détail technique : {type(e).__name__}: {e}")
 
 st.divider()
-st.caption("ErlHockey Stats V3 • Collecte planifiée via GitHub Actions")
+st.caption("ErlHockey Stats V4 • Collecte planifiée via GitHub Actions")
