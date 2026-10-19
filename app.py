@@ -1,4 +1,4 @@
-"""ErlHockey Stats V10 — statistiques, picks et tendances NHL."""
+"""ErlHockey Stats V11 — statistiques, picks et tendances NHL."""
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
@@ -676,24 +676,104 @@ try:
                             st.session_state['navigation_page'] = '👤 Statistiques joueurs'
                             st.rerun()
     elif page=="📊 Historique":
-        st.caption("Données NHL conservées dans Supabase par la collecte automatique.")
+        st.caption("Archives des rencontres NHL conservées dans Supabase. Les résultats dépendent des matchs déjà collectés.")
         try:
             status = db_status()
-            if not status.empty:
+            if not status.empty and pd.notna(status.iloc[0]["last_success_at"]):
                 last = status.iloc[0]["last_success_at"]
                 st.info(f"Dernière collecte : {last.astimezone(PARIS):%d/%m/%Y %H:%M} (Paris) — {status.iloc[0]['details']}")
             totals = db_query("SELECT (SELECT COUNT(*) FROM nhl_games) AS matchs, (SELECT COUNT(*) FROM nhl_player_games) AS joueurs")
             a, b = st.columns(2)
             a.metric("Matchs enregistrés", int(totals.iloc[0]["matchs"]))
-            b.metric("Statistiques joueurs", int(totals.iloc[0]["joueurs"]))
-            st.subheader("Matchs enregistrés")
-            games_db = db_query("SELECT game_date AS date, away_team AS exterieur, away_score AS score_ext, home_team AS domicile, home_score AS score_dom, game_state AS etat FROM nhl_games ORDER BY game_date DESC, game_id DESC LIMIT 250")
-            show_table(games_db.to_dict("records"))
-            st.subheader("Statistiques d'un joueur")
-            query = st.text_input("Rechercher un joueur", placeholder="Ex. McDavid")
-            if query.strip():
-                stats = db_query("SELECT game_date AS date, player_name AS joueur, team AS equipe, goals AS buts, assists AS passes, points FROM nhl_player_games WHERE player_name ILIKE %s ORDER BY game_date DESC LIMIT 100", (f"%{query.strip()}%",))
-                show_table(stats.to_dict("records"))
+            b.metric("Lignes statistiques joueurs", int(totals.iloc[0]["joueurs"]))
+
+            st.subheader("🔎 Rechercher des matchs")
+            bounds = db_query("SELECT MIN(game_date) AS debut, MAX(game_date) AS fin FROM nhl_games")
+            if bounds.empty or pd.isna(bounds.iloc[0]['debut']):
+                st.info("Aucun match enregistré dans Supabase pour le moment.")
+            else:
+                first_day = pd.to_datetime(bounds.iloc[0]['debut']).date()
+                last_day = pd.to_datetime(bounds.iloc[0]['fin']).date()
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    begin = st.date_input("Du", value=first_day, min_value=first_day, max_value=last_day, key="history_start")
+                with c2:
+                    finish = st.date_input("Au", value=last_day, min_value=first_day, max_value=last_day, key="history_end")
+                teams_df = db_query("SELECT team FROM (SELECT home_team AS team FROM nhl_games UNION SELECT away_team AS team FROM nhl_games) t WHERE team IS NOT NULL ORDER BY team")
+                with c3:
+                    team_filter = st.selectbox("Équipe", ["Toutes les équipes"] + teams_df['team'].tolist(), key="history_team")
+                state_filter = st.selectbox("État", ["Matchs terminés", "Tous les états", "Matchs à venir"], key="history_state")
+                if begin > finish:
+                    st.warning("La date de début doit précéder la date de fin.")
+                else:
+                    clauses = ["game_date >= %s", "game_date <= %s"]
+                    params = [begin, finish]
+                    if team_filter != "Toutes les équipes":
+                        clauses.append("(home_team = %s OR away_team = %s)")
+                        params.extend([team_filter, team_filter])
+                    if state_filter == "Matchs terminés":
+                        clauses.append("game_state IN ('OFF', 'FINAL')")
+                    elif state_filter == "Matchs à venir":
+                        clauses.append("game_state IN ('FUT', 'PRE')")
+                    where = " AND ".join(clauses)
+                    count = db_query(f"SELECT COUNT(*) AS n FROM nhl_games WHERE {where}", tuple(params))
+                    n = int(count.iloc[0]['n'])
+                    st.metric("Rencontres correspondant aux filtres", n)
+                    if n:
+                        page_size = 50
+                        max_page = (n - 1) // page_size + 1
+                        page_number = st.number_input("Page", min_value=1, max_value=max_page, value=1, step=1, key="history_page")
+                        games_db = db_query(f"""
+                            SELECT game_id, game_date AS date, away_team AS exterieur,
+                                   away_score AS score_ext, home_team AS domicile,
+                                   home_score AS score_dom, game_state AS etat
+                            FROM nhl_games WHERE {where}
+                            ORDER BY game_date DESC, game_id DESC LIMIT %s OFFSET %s
+                        """, tuple(params + [page_size, (int(page_number)-1)*page_size]))
+                        st.dataframe(games_db.drop(columns=['game_id']).rename(columns={
+                            'date':'Date', 'exterieur':'Extérieur', 'score_ext':'Score ext.',
+                            'domicile':'Domicile', 'score_dom':'Score dom.', 'etat':'État'
+                        }), hide_index=True, use_container_width=True)
+                        st.caption(f"Page {page_number}/{max_page} — {len(games_db)} matchs affichés sur {n}.")
+                        st.subheader("🏒 Détail d'une rencontre")
+                        game_choices = games_db.to_dict('records')
+                        chosen = st.selectbox("Choisir un match de cette page", range(len(game_choices)),
+                            format_func=lambda i: f"{game_choices[i]['date']} · {game_choices[i]['exterieur']} @ {game_choices[i]['domicile']} · {game_choices[i]['etat']}",
+                            key="history_selected_game")
+                        selected_game = game_choices[chosen]
+                        st.markdown(f"**{selected_game['exterieur']} @ {selected_game['domicile']}**")
+                        x, y, z = st.columns(3)
+                        x.metric(selected_game['exterieur'], selected_game['score_ext'] if pd.notna(selected_game['score_ext']) else '—')
+                        y.metric(selected_game['domicile'], selected_game['score_dom'] if pd.notna(selected_game['score_dom']) else '—')
+                        z.metric("État", selected_game['etat'])
+                        if selected_game['etat'] in ('OFF', 'FINAL'):
+                            details = game_player_details(selected_game['game_id'])
+                            if details.empty:
+                                st.info("Statistiques des joueurs indisponibles dans l'historique collecté pour cette rencontre.")
+                            else:
+                                scorers = details[details['points'] > 0]
+                                st.subheader("⭐ Joueurs ayant obtenu des points")
+                                if scorers.empty:
+                                    st.info("Aucun joueur avec point enregistré pour ce match.")
+                                else:
+                                    st.dataframe(scorers[['joueur','equipe','buts','passes','points']].rename(columns={
+                                        'joueur':'Joueur','equipe':'Équipe','buts':'Buts','passes':'Passes','points':'Points'
+                                    }), hide_index=True, use_container_width=True)
+                                st.subheader("🥅 Buteurs du match")
+                                goal_scorers = details[details['buts'] > 0]
+                                if goal_scorers.empty:
+                                    st.info("Aucun buteur enregistré pour ce match.")
+                                else:
+                                    st.dataframe(goal_scorers[['joueur','equipe','buts']].rename(columns={
+                                        'joueur':'Joueur','equipe':'Équipe','buts':'Buts'
+                                    }), hide_index=True, use_container_width=True)
+                                with st.expander("Tous les joueurs du match"):
+                                    st.dataframe(details.drop(columns=['player_id']).rename(columns={
+                                        'joueur':'Joueur','equipe':'Équipe','buts':'Buts',
+                                        'passes':'Passes','points':'Points'
+                                    }), hide_index=True, use_container_width=True)
+                        else:
+                            st.info("Cette rencontre n'est pas terminée : pas encore de statistiques définitives.")
         except Exception as exc:
             st.error("Impossible de lire l'historique Supabase.")
             st.caption(f"Détail : {type(exc).__name__}: {exc}")
@@ -707,4 +787,4 @@ except Exception as e:
     st.caption(f"Détail technique : {type(e).__name__}: {e}")
 
 st.divider()
-st.caption("ErlHockey Stats V10 • Collecte planifiée via GitHub Actions")
+st.caption("ErlHockey Stats V11 • Collecte planifiée via GitHub Actions")
