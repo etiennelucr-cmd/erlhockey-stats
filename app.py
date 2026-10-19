@@ -173,7 +173,7 @@ def game_time(g):
         return '—'
 
 def team_predictions(games):
-    """Classement indicatif de forme : aucun pourcentage de victoire prédit."""
+    """Tendances descriptives de forme, non probabilités de victoire."""
     form = recent_team_form()
     rows = []
 
@@ -191,14 +191,9 @@ def team_predictions(games):
         ga = int(last5['buts_contre'].sum())
         vn = len(venue)
         vw = int(venue['win'].sum())
-        # Les 5 derniers matchs comptent davantage ; forme au lieu ajoutée
-        # seulement si au moins deux rencontres y sont disponibles.
         score = 0.55 * (w5 / 5) + 0.25 * (w10 / n10)
         score += 0.10 * max(-1, min(1, (gf - ga) / 10))
-        if vn >= 2:
-            score += 0.10 * (vw / vn)
-        else:
-            score += 0.05  # neutre, sans inventer de tendance au lieu
+        score += 0.10 * (vw / vn) if vn >= 2 else 0.05
         return dict(score=score, w5=w5, w10=w10, n10=n10,
                     gf=gf, ga=ga, vw=vw, vn=vn)
 
@@ -207,26 +202,42 @@ def team_predictions(games):
         home = g.get('homeTeam', {}).get('abbrev', '?')
         a, h = summary(away, 'E'), summary(home, 'D')
         if a is None or h is None:
-            signal = 'Données insuffisantes'
-            reason = 'Au moins 5 matchs terminés nécessaires pour chaque équipe'
+            favorite = 'Indéterminé'
+            confidence = 'Non évaluée'
+            reason = 'Moins de 5 matchs terminés pour une équipe'
+            wins = '—'
             detail = '—'
         else:
             diff = h['score'] - a['score']
-            if abs(diff) < 0.12:
-                signal = 'Match serré'
+            gap = abs(diff)
+            favorite = 'Match serré' if gap < 0.12 else (home if diff > 0 else away)
+            # Seuils de lecture du score interne : ce ne sont pas des probabilités.
+            if gap < 0.12:
+                confidence = 'Faible'
+            elif gap < 0.25:
+                confidence = 'Moyenne'
             else:
-                signal = f'Avantage {home if diff > 0 else away}'
-            reason = (f"{away} : {a['w5']}/5 et {a['w10']}/{a['n10']} victoires ; "
-                      f"{home} : {h['w5']}/5 et {h['w10']}/{h['n10']}")
+                confidence = 'Forte'
+            leading = home if diff > 0 else away
+            leader = h if diff > 0 else a
+            other = a if diff > 0 else h
+            if favorite == 'Match serré':
+                reason = f'Forme proche : {away} {a["w5"]}/5, {home} {h["w5"]}/5 victoires'
+            else:
+                reason = (f'{leading} : {leader["w5"]}/5 victoires récentes '
+                          f'contre {other["w5"]}/5')
+            wins = (f'{away} : {a["w5"]}/5 et {a["w10"]}/{a["n10"]} ; '
+                    f'{home} : {h["w5"]}/5 et {h["w10"]}/{h["n10"]}')
             def venue_text(team, x, label):
-                return (f"{team} {label} : {x['vw']}/{x['vn']} victoires"
-                        if x['vn'] >= 2 else f"{team} {label} : données limitées")
-            detail = (f"Buts sur 5 : {away} {a['gf']}-{a['ga']}, "
-                      f"{home} {h['gf']}-{h['ga']} ; "
-                      f"{venue_text(away, a, 'extérieur')} ; "
-                      f"{venue_text(home, h, 'domicile')}")
+                return (f'{team} {label} : {x["vw"]}/{x["vn"]} victoires'
+                        if x['vn'] >= 2 else f'{team} {label} : données limitées')
+            detail = (f'Buts sur 5 : {away} {a["gf"]}-{a["ga"]}, '
+                      f'{home} {h["gf"]}-{h["ga"]} ; '
+                      f'{venue_text(away, a, "extérieur")} ; '
+                      f'{venue_text(home, h, "domicile")}')
         rows.append({'Heure (Paris)': game_time(g), 'Match': f'{away} @ {home}',
-                     'Tendance': signal, 'Victoires (5 et 10 matchs)': reason,
+                     'Équipe favorite': favorite, 'Confiance statistique': confidence,
+                     'Pourquoi ?': reason, 'Victoires (5 et 10 matchs)': wins,
                      'Buts et domicile/extérieur': detail})
     return rows
 
@@ -270,7 +281,7 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V7")
+    st.caption("NHL • Stats V7.1")
     page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
                                  "🎯 Buts 5/5","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"])
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
@@ -291,10 +302,15 @@ try:
         st.subheader("📅 Matchs du jour")
         show_table(matches_table(games))
         st.subheader("🔮 Prédictions — matchs du jour")
-        st.caption("Tendances expérimentales : victoires sur 5 et 10 matchs, buts marqués/encaissés sur 5 matchs et forme à domicile/extérieur. Historique Supabase uniquement ; aucun pourcentage de victoire garanti.")
+        st.caption("Tendances expérimentales fondées sur la forme récente et les buts. La confiance exprime seulement l’écart du score interne entre équipes : ce n’est pas une probabilité de victoire.")
         future = [g for g in games if g.get('gameState') not in ('OFF','FINAL','LIVE','CRIT')]
         if future:
-            show_table(team_predictions(future))
+            predictions = team_predictions(future)
+            short_cols = ['Heure (Paris)', 'Match', 'Équipe favorite',
+                          'Confiance statistique', 'Pourquoi ?']
+            show_table([{k: row[k] for k in short_cols} for row in predictions])
+            with st.expander('📊 Voir les statistiques détaillées des prédictions'):
+                show_table(predictions)
         else:
             st.info("Aucun match à venir aujourd'hui à analyser.")
         st.caption("En NHL, il n'y a pas de match nul au résultat final : une égalité après 60 minutes mène à la prolongation ou aux tirs au but. La mention « match serré » n'est pas un pronostic de nul réglementaire. Gardiens, blessures et compositions non pris en compte.")
@@ -494,4 +510,4 @@ except Exception as e:
     st.caption(f"Détail technique : {type(e).__name__}: {e}")
 
 st.divider()
-st.caption("ErlHockey Stats V7 • Collecte planifiée via GitHub Actions")
+st.caption("ErlHockey Stats V7.1 • Collecte planifiée via GitHub Actions")
