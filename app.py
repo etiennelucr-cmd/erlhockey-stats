@@ -1,4 +1,4 @@
-"""ErlHockey Stats V7 — statistiques, picks et tendances NHL."""
+"""ErlHockey Stats V8 — statistiques, picks et tendances NHL."""
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
@@ -281,7 +281,7 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V7.1")
+    st.caption("NHL • Stats V8")
     page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
                                  "🎯 Buts 5/5","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"])
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
@@ -354,18 +354,67 @@ try:
             })
             st.dataframe(results.drop(columns=["player_id"]), hide_index=True, use_container_width=True)
     elif page=="📈 Séries 24 h":
-        st.caption("Analyse des joueurs présents dans les listes de leaders NHL, pas de l'ensemble des joueurs de la ligue.")
-        with st.spinner("Analyse des cinq derniers matchs des joueurs sélectionnés…"):
-            rows=[]
-            for p in candidates():
+        st.caption("Joueurs ayant obtenu un point dans au moins 3 de leurs 5 derniers matchs et dont l'équipe joue dans les 24 prochaines heures.")
+        st.info("Fenêtre glissante de 24 heures calculée à partir des horaires officiels de début des matchs NHL (heure de Paris). Seuls les matchs non commencés sont retenus.")
+        minimum = st.selectbox("Régularité minimale", [3, 4, 5], index=0,
+                               format_func=lambda n: f"{n}/5 matchs avec point")
+        now_utc = datetime.now(timezone.utc)
+        deadline_utc = now_utc + timedelta(hours=24)
+        # Consulter aussi le surlendemain pour couvrir les 24 heures autour de minuit.
+        upcoming_24h = []
+        seen_games = set()
+        for offset in range(3):
+            day = datetime.now(PARIS).date() + timedelta(days=offset)
+            for g in matches_for_day(day):
+                if g.get("gameState") in ("OFF", "FINAL", "LIVE", "CRIT"):
+                    continue
                 try:
-                    s=five_game_stats(p)
-                    if s: rows.append(s)
-                except (requests.RequestException, ValueError, KeyError): continue
-        st.warning("V1 : série de points affichée ; le filtre 'match dans les prochaines 24 h' sera ajouté avec la collecte planifiée.")
-        rows=[r for r in rows if r["Matchs avec point"]>=3]
-        rows.sort(key=lambda r:(r["Points (5 matchs)"],r["Buts (5 matchs)"]),reverse=True)
-        show_table(rows,["Joueur","Équipe","Buts (5 matchs)","Points (5 matchs)","Matchs avec point","Matchs avec but"])
+                    start_utc = datetime.fromisoformat(g["startTimeUTC"].replace("Z", "+00:00"))
+                except (KeyError, TypeError, ValueError, AttributeError):
+                    continue
+                if not now_utc <= start_utc < deadline_utc:
+                    continue
+                game_key = g.get("id") or (g.get("startTimeUTC"),
+                    g.get("awayTeam", {}).get("abbrev"), g.get("homeTeam", {}).get("abbrev"))
+                if game_key in seen_games:
+                    continue
+                seen_games.add(game_key)
+                upcoming_24h.append((start_utc, g))
+        upcoming_24h.sort(key=lambda item: item[0])
+        if not upcoming_24h:
+            st.info("Aucun match NHL non commencé dans les prochaines 24 heures.")
+        else:
+            with st.spinner("Recherche des séries de points dans Supabase…"):
+                form = recent_player_form()
+            rows = []
+            seen_players = set()
+            for start_utc, g in upcoming_24h:
+                away = g.get("awayTeam", {}).get("abbrev", "?")
+                home = g.get("homeTeam", {}).get("abbrev", "?")
+                for _, player in form[form["equipe"].isin((away, home))].iterrows():
+                    played = int(player["matchs_avec_point"])
+                    if played < minimum:
+                        continue
+                    player_id = str(player["player_id"])
+                    if player_id in seen_players:
+                        continue
+                    seen_players.add(player_id)
+                    rows.append({
+                        "Heure (Paris)": start_utc.astimezone(PARIS).strftime("%d/%m %H:%M"),
+                        "Match": f"{away} @ {home}",
+                        "Joueur": player["joueur"],
+                        "Équipe": player["equipe"],
+                        "Adversaire": home if player["equipe"] == away else away,
+                        "Matchs avec point / 5": played,
+                        "Points / 5": int(player["points_5"]),
+                        "Points / 2 derniers": int(player["points_2"]),
+                        "Points par match (récent → ancien)": player["points_par_match"],
+                    })
+            rows.sort(key=lambda r: (-r["Matchs avec point / 5"], -r["Points / 5"],
+                                     -r["Points / 2 derniers"], r["Heure (Paris)"], r["Joueur"]))
+            st.metric("Joueurs en série jouant sous 24 h", len(rows))
+            show_table(rows)
+            st.caption("Analyse fondée sur les matchs terminés collectés dans Supabase. La présence effective des joueurs et les compositions ne sont pas vérifiées.")
     elif page=="⭐ Points 24 h":
         st.caption("Joueurs avec au moins 2 points lors d'un match terminé récemment, parmi tous les joueurs enregistrés dans Supabase.")
         st.warning("Fenêtre approximative : matchs datés d'aujourd'hui ou d'hier (heure de Paris), pas une mesure exacte des 24 heures depuis la fin du match.")
@@ -510,4 +559,4 @@ except Exception as e:
     st.caption(f"Détail technique : {type(e).__name__}: {e}")
 
 st.divider()
-st.caption("ErlHockey Stats V7.1 • Collecte planifiée via GitHub Actions")
+st.caption("ErlHockey Stats V8 • Collecte planifiée via GitHub Actions")
