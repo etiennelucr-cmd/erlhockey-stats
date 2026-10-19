@@ -1,4 +1,4 @@
-"""ErlHockey Stats V8 — statistiques, picks et tendances NHL."""
+"""ErlHockey Stats V9 — statistiques, picks et tendances NHL."""
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
@@ -281,7 +281,7 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V8")
+    st.caption("NHL • Stats V9")
     page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
                                  "🎯 Buts 5/5","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"])
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
@@ -509,21 +509,71 @@ try:
                 st.caption("Les blessures, les compositions, les gardiens et les cotes ne sont pas intégrés. "
                            "Un joueur sélectionné peut ne pas participer au match.")
     elif page=="👤 Statistiques joueurs":
-        st.caption("Recherche parmi les joueurs des listes de leaders NHL ; recherche exhaustive à venir.")
-        pool=candidates()
-        names={f"{player_name(p)} ({p.get('teamAbbrev','')})":p for p in pool}
-        q=st.text_input("Filtrer les joueurs",placeholder="Ex. McDavid")
-        filtered=[n for n in names if q.casefold() in n.casefold()]
-        if filtered:
-            choice=st.selectbox("Choisir un joueur",filtered)
-            p=names[choice]
-            games=game_log(p["id"])
-            st.subheader(choice)
-            if games:
-                st.metric("Points sur les 5 derniers matchs",sum(int(g.get("goals") or 0)+int(g.get("assists") or 0) for g in games[:5]))
-                show_table([{"Date":g.get("gameDate"),"Adversaire":g.get("opponentAbbrev",""),"Buts":g.get("goals",0),"Passes":g.get("assists",0),"Points":int(g.get("goals") or 0)+int(g.get("assists") or 0)} for g in games[:30]])
-            else: st.info("Aucun match de saison régulière disponible pour ce joueur.")
-        else: st.info("Aucun joueur correspondant dans l'échantillon disponible.")
+        st.caption("Recherche parmi tous les joueurs présents dans l'historique Supabase. Statistiques limitées aux matchs déjà collectés.")
+        with st.spinner("Chargement des joueurs enregistrés…"):
+            roster = db_query("""
+                SELECT DISTINCT ON (p.player_id)
+                       p.player_id, p.player_name AS joueur, p.team AS equipe
+                FROM nhl_player_games p
+                JOIN nhl_games g ON g.game_id = p.game_id
+                WHERE g.game_state IN ('OFF', 'FINAL')
+                ORDER BY p.player_id, p.game_date DESC, p.game_id DESC
+            """)
+        if roster.empty:
+            st.info("Aucun joueur enregistré pour le moment dans Supabase.")
+        else:
+            q = st.text_input("Rechercher un joueur", placeholder="Ex. McDavid, Kaprizov ou EDM")
+            matching = roster[
+                roster['joueur'].astype(str).str.contains(q, case=False, regex=False, na=False)
+                | roster['equipe'].astype(str).str.contains(q, case=False, regex=False, na=False)
+            ] if q.strip() else roster
+            matching = matching.sort_values(['joueur', 'equipe'])
+            st.caption(f"{len(matching)} joueur(s) correspondant à la recherche sur {len(roster)} enregistrés.")
+            if matching.empty:
+                st.info("Aucun joueur correspondant. Essaie un autre nom ou une équipe.")
+            else:
+                options = matching['player_id'].tolist()
+                labels = {int(r['player_id']): f"{r['joueur']} ({r['equipe']})" for _, r in matching.iterrows()}
+                selected = st.selectbox("Choisir un joueur", options, format_func=lambda pid: labels[int(pid)])
+                history = db_query("""
+                    SELECT p.game_date AS date, p.game_id,
+                           CASE WHEN p.team = g.home_team THEN g.away_team
+                                WHEN p.team = g.away_team THEN g.home_team
+                                ELSE '—' END AS adversaire,
+                           CASE WHEN p.team = g.home_team THEN 'Domicile'
+                                WHEN p.team = g.away_team THEN 'Extérieur'
+                                ELSE '—' END AS lieu,
+                           p.team AS equipe, p.goals AS buts,
+                           p.assists AS passes, p.points AS points
+                    FROM nhl_player_games p
+                    JOIN nhl_games g ON g.game_id = p.game_id
+                    WHERE p.player_id = %s AND g.game_state IN ('OFF', 'FINAL')
+                    ORDER BY p.game_date DESC, p.game_id DESC
+                """, (int(selected),))
+                st.subheader(labels[int(selected)])
+                if history.empty:
+                    st.info("Aucun match terminé enregistré pour ce joueur.")
+                else:
+                    last_five = history.head(5)
+                    a, b, c, d = st.columns(4)
+                    a.metric("Matchs enregistrés", len(history))
+                    b.metric("Buts enregistrés", int(history['buts'].sum()))
+                    c.metric("Passes enregistrées", int(history['passes'].sum()))
+                    d.metric("Points enregistrés", int(history['points'].sum()))
+                    a, b, c = st.columns(3)
+                    a.metric("Points / 5 derniers", int(last_five['points'].sum()))
+                    b.metric("Buts / 5 derniers", int(last_five['buts'].sum()))
+                    c.metric("Matchs avec point / 5 derniers", f"{int((last_five['points'] > 0).sum())}/{len(last_five)}")
+                    st.subheader("Évolution des points par match")
+                    graph = history.iloc[::-1].copy()
+                    graph['match'] = [f"{date} · {i+1}" for i, date in enumerate(graph['date'].astype(str))]
+                    st.line_chart(graph.set_index('match')[['points']], height=240)
+                    st.subheader("Historique des matchs enregistrés")
+                    st.dataframe(history.drop(columns=['game_id']).rename(columns={
+                        'date': 'Date', 'adversaire': 'Adversaire', 'lieu': 'Lieu',
+                        'equipe': 'Équipe', 'buts': 'Buts', 'passes': 'Passes', 'points': 'Points'
+                    }), hide_index=True, use_container_width=True)
+                    st.caption("Les totaux correspondent à l'historique Supabase collecté, pas nécessairement à toute la saison NHL.")
     elif page=="📅 Matchs NHL":
         day=st.date_input("Date des matchs",value=today)
         show_table(matches_table(matches_for_day(day)))
@@ -559,4 +609,4 @@ except Exception as e:
     st.caption(f"Détail technique : {type(e).__name__}: {e}")
 
 st.divider()
-st.caption("ErlHockey Stats V8 • Collecte planifiée via GitHub Actions")
+st.caption("ErlHockey Stats V9 • Collecte planifiée via GitHub Actions")
