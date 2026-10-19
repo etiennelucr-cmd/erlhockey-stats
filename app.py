@@ -1,4 +1,4 @@
-"""ErlHockey Stats V6.1 — statistiques, picks et tendances NHL."""
+"""ErlHockey Stats V7 — statistiques, picks et tendances NHL."""
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
@@ -132,25 +132,29 @@ def recent_player_form():
 
 @st.cache_data(ttl=300, show_spinner=False)
 def recent_team_form():
-    """Résultats des cinq derniers matchs terminés par équipe."""
+    """Dix derniers résultats par équipe, avec domicile/extérieur et buts."""
     return db_query("""
         WITH team_games AS (
-            SELECT game_id, game_date, home_team AS team,
-                   CASE WHEN home_score > away_score THEN 1 ELSE 0 END AS win
+            SELECT game_id, game_date, home_team AS team, 'D' AS lieu,
+                   CASE WHEN home_score > away_score THEN 1 ELSE 0 END AS win,
+                   home_score AS buts_pour, away_score AS buts_contre
             FROM nhl_games WHERE game_state IN ('OFF','FINAL')
               AND home_score IS NOT NULL AND away_score IS NOT NULL
             UNION ALL
-            SELECT game_id, game_date, away_team AS team,
-                   CASE WHEN away_score > home_score THEN 1 ELSE 0 END AS win
+            SELECT game_id, game_date, away_team AS team, 'E' AS lieu,
+                   CASE WHEN away_score > home_score THEN 1 ELSE 0 END AS win,
+                   away_score AS buts_pour, home_score AS buts_contre
             FROM nhl_games WHERE game_state IN ('OFF','FINAL')
               AND home_score IS NOT NULL AND away_score IS NOT NULL
         ), ranked AS (
-            SELECT team, win, ROW_NUMBER() OVER (
-                PARTITION BY team ORDER BY game_date DESC, game_id DESC) AS rn
+            SELECT *, ROW_NUMBER() OVER (
+                PARTITION BY team ORDER BY game_date DESC, game_id DESC) AS rn,
+                ROW_NUMBER() OVER (
+                PARTITION BY team, lieu ORDER BY game_date DESC, game_id DESC) AS rn_lieu
             FROM team_games
         )
-        SELECT team, COUNT(*) AS matchs, SUM(win) AS victoires
-        FROM ranked WHERE rn <= 5 GROUP BY team
+        SELECT team, lieu, rn, rn_lieu, win, buts_pour, buts_contre
+        FROM ranked WHERE rn <= 10 OR rn_lieu <= 5
     """)
 
 def upcoming_games(days=2):
@@ -169,25 +173,61 @@ def game_time(g):
         return '—'
 
 def team_predictions(games):
+    """Classement indicatif de forme : aucun pourcentage de victoire prédit."""
     form = recent_team_form()
-    stats = {str(r['team']): r for _, r in form.iterrows()}
     rows = []
+
+    def summary(team, lieu):
+        team_rows = form[form['team'] == team]
+        last5 = team_rows[team_rows['rn'] <= 5]
+        last10 = team_rows[team_rows['rn'] <= 10]
+        venue = team_rows[(team_rows['lieu'] == lieu) & (team_rows['rn_lieu'] <= 5)]
+        if len(last5) < 5:
+            return None
+        w5 = int(last5['win'].sum())
+        w10 = int(last10['win'].sum())
+        n10 = len(last10)
+        gf = int(last5['buts_pour'].sum())
+        ga = int(last5['buts_contre'].sum())
+        vn = len(venue)
+        vw = int(venue['win'].sum())
+        # Les 5 derniers matchs comptent davantage ; forme au lieu ajoutée
+        # seulement si au moins deux rencontres y sont disponibles.
+        score = 0.55 * (w5 / 5) + 0.25 * (w10 / n10)
+        score += 0.10 * max(-1, min(1, (gf - ga) / 10))
+        if vn >= 2:
+            score += 0.10 * (vw / vn)
+        else:
+            score += 0.05  # neutre, sans inventer de tendance au lieu
+        return dict(score=score, w5=w5, w10=w10, n10=n10,
+                    gf=gf, ga=ga, vw=vw, vn=vn)
+
     for g in games:
         away = g.get('awayTeam', {}).get('abbrev', '?')
         home = g.get('homeTeam', {}).get('abbrev', '?')
-        a, h = stats.get(away), stats.get(home)
-        if a is None or h is None or min(int(a['matchs']), int(h['matchs'])) < 3:
+        a, h = summary(away, 'E'), summary(home, 'D')
+        if a is None or h is None:
             signal = 'Données insuffisantes'
-            reason = 'Moins de 3 matchs récents pour une équipe'
+            reason = 'Au moins 5 matchs terminés nécessaires pour chaque équipe'
+            detail = '—'
         else:
-            av, hv = int(a['victoires']), int(h['victoires'])
-            if abs(av - hv) <= 1:
-                signal = 'Match serré / prolongation possible'
+            diff = h['score'] - a['score']
+            if abs(diff) < 0.12:
+                signal = 'Match serré'
             else:
-                signal = f'Avantage {home if hv > av else away}'
-            reason = f'{away} : {av}/{int(a["matchs"])} victoires ; {home} : {hv}/{int(h["matchs"])}'
+                signal = f'Avantage {home if diff > 0 else away}'
+            reason = (f"{away} : {a['w5']}/5 et {a['w10']}/{a['n10']} victoires ; "
+                      f"{home} : {h['w5']}/5 et {h['w10']}/{h['n10']}")
+            def venue_text(team, x, label):
+                return (f"{team} {label} : {x['vw']}/{x['vn']} victoires"
+                        if x['vn'] >= 2 else f"{team} {label} : données limitées")
+            detail = (f"Buts sur 5 : {away} {a['gf']}-{a['ga']}, "
+                      f"{home} {h['gf']}-{h['ga']} ; "
+                      f"{venue_text(away, a, 'extérieur')} ; "
+                      f"{venue_text(home, h, 'domicile')}")
         rows.append({'Heure (Paris)': game_time(g), 'Match': f'{away} @ {home}',
-                     'Tendance': signal, 'Forme récente': reason})
+                     'Tendance': signal, 'Victoires (5 et 10 matchs)': reason,
+                     'Buts et domicile/extérieur': detail})
     return rows
 
 def player_name(p):
@@ -230,7 +270,7 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V6.1")
+    st.caption("NHL • Stats V7")
     page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
                                  "🎯 Buts 5/5","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"])
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
@@ -251,13 +291,13 @@ try:
         st.subheader("📅 Matchs du jour")
         show_table(matches_table(games))
         st.subheader("🔮 Prédictions — matchs du jour")
-        st.caption("Tendances indicatives fondées uniquement sur les victoires des 5 derniers matchs enregistrés. Ce ne sont pas des probabilités fiables.")
+        st.caption("Tendances expérimentales : victoires sur 5 et 10 matchs, buts marqués/encaissés sur 5 matchs et forme à domicile/extérieur. Historique Supabase uniquement ; aucun pourcentage de victoire garanti.")
         future = [g for g in games if g.get('gameState') not in ('OFF','FINAL','LIVE','CRIT')]
         if future:
             show_table(team_predictions(future))
         else:
             st.info("Aucun match à venir aujourd'hui à analyser.")
-        st.caption("En NHL, il n'y a pas de match nul au résultat final : une égalité après 60 minutes mène à la prolongation ou aux tirs au but. La mention « match serré » n'est pas un pronostic de nul réglementaire.")
+        st.caption("En NHL, il n'y a pas de match nul au résultat final : une égalité après 60 minutes mène à la prolongation ou aux tirs au but. La mention « match serré » n'est pas un pronostic de nul réglementaire. Gardiens, blessures et compositions non pris en compte.")
     elif page=="🥅 Buts 3 sur 5":
         st.caption("Joueurs ayant marqué au moins un but dans 3 de leurs 5 derniers matchs terminés enregistrés dans Supabase.")
         st.info("Calcul fondé sur les matchs disponibles dans l'historique collecté (fenêtre actuelle limitée). Les joueurs ayant moins de 5 matchs enregistrés sont exclus.")
@@ -454,4 +494,4 @@ except Exception as e:
     st.caption(f"Détail technique : {type(e).__name__}: {e}")
 
 st.divider()
-st.caption("ErlHockey Stats V6.1 • Collecte planifiée via GitHub Actions")
+st.caption("ErlHockey Stats V7 • Collecte planifiée via GitHub Actions")
