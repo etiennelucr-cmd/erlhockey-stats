@@ -31,9 +31,16 @@ def team_code(team):
 
 
 def player_name(player):
+    """Le boxscore NHL fournit normalement name.default, pas firstName/lastName."""
     def label(value):
-        return value.get("default", "") if isinstance(value, dict) else (value or "")
-    return (label(player.get("firstName")) + " " + label(player.get("lastName"))).strip() or str(player["playerId"])
+        if isinstance(value, dict):
+            return value.get("default") or value.get("fr") or ""
+        return str(value or "")
+
+    name = label(player.get("name")).strip()
+    if not name:
+        name = (label(player.get("firstName")) + " " + label(player.get("lastName"))).strip()
+    return name or str(player["playerId"])
 
 
 def collect_day(conn, day):
