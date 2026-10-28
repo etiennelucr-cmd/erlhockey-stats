@@ -32,6 +32,6 @@ jobs:
 
       - name: Verifier les resultats des combines
         env:
-          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: python settle_v14.py
+      
