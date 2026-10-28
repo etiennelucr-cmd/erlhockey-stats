@@ -192,15 +192,30 @@ def show(db_query):
     st.dataframe(upcoming.assign(**{'Heure (Paris)': upcoming.start_paris.dt.strftime('%d/%m %H:%M'),
                                    'Match': upcoming.away_team + ' @ ' + upcoming.home_team})[['Heure (Paris)', 'Match']],
                  hide_index=True, use_container_width=True)
-    picks = player_candidates(db_query, upcoming, window) + match_candidates(db_query, upcoming, window)
+    mode = st.radio('Type de combiné', ['Joueurs uniquement', 'Matchs uniquement', 'Mixte'],
+                    horizontal=True, key='combo_mode_v14',
+                    help='Joueurs : points, buts, 2+ points. Un seul joueur par rencontre dans chaque combiné.')
+    player_picks = player_candidates(db_query, upcoming, window) if mode != 'Matchs uniquement' else []
+    match_picks = match_candidates(db_query, upcoming, window) if mode != 'Joueurs uniquement' else []
+    if mode == 'Joueurs uniquement':
+        st.caption('Marchés disponibles : 1+ point, 1+ but et 2+ points. Historique récent et streaks pris en compte.')
+        market_labels = {'points_1': '1+ point', 'goals_1': '1+ but', 'points_2': '2+ points'}
+        selected_markets = st.multiselect('Marchés joueurs', list(market_labels),
+            default=list(market_labels), format_func=lambda key: market_labels[key], key='combo_player_markets')
+        allowed = {market_labels[key] for key in selected_markets}
+        player_picks = [p for p in player_picks if p['selection'].split(' — ')[-1] in allowed]
+    picks = player_picks + match_picks
     fixture_count = upcoming['game_id'].nunique()
     st.caption(f'{fixture_count} match(s) au calendrier pour la période sélectionnée.')
     if fixture_count < 2:
         st.warning('Il faut au moins deux matchs distincts pour construire un combiné.')
         return
-    legs = st.select_slider('Nombre de sélections par combiné', options=list(range(2, fixture_count + 1)), value=min(4, fixture_count), key='combo_legs')
+    legs = st.select_slider('Nombre de sélections par combiné', options=list(range(2, fixture_count + 1)), value=min(10, fixture_count) if mode == 'Joueurs uniquement' else min(4, fixture_count), key=f'combo_legs_{mode}')
     st.caption(f'{legs} sélections sur {legs} matchs différents (maximum {fixture_count} matchs programmés).')
-    st.info('Tirs cadrés indisponibles sans collecte de données. Vainqueurs en temps réglementaire estimés avec un modèle Poisson simplifié. Les absences et les gardiens ne sont pas intégrés.')
+    if mode != 'Joueurs uniquement':
+        st.info('Tirs cadrés indisponibles sans collecte de données. Vainqueurs en temps réglementaire estimés avec un modèle Poisson simplifié. Les absences et les gardiens ne sont pas intégrés.')
+    else:
+        st.info('10 sélections nécessitent 10 matchs distincts avec des joueurs éligibles dans le profil choisi. La participation des joueurs n’est pas confirmée.')
     if not picks:
         st.warning('Historique insuffisant pour produire des sélections.')
         return
@@ -213,7 +228,7 @@ def show(db_query):
     st.subheader('🧩 Les 5 profils du Combo Builder')
     st.caption('« Prudent » signifie uniquement des probabilités estimées plus élevées, pas un pari sûr. Aucun profil ne garantit un gain.')
     adaptive = st.checkbox('Adapter automatiquement le nombre de sélections si un profil manque de matchs éligibles', value=False, key='combo_adaptive')
-    diversify = st.checkbox('Diversifier les marchés lorsque possible (joueurs et matchs)', value=True, key='combo_diversify')
+    diversify = st.checkbox('Diversifier les marchés lorsque possible', value=True, key='combo_diversify')
     tabs = st.tabs([f'{name}' for name in PROFILES])
     for tab, (name, config) in zip(tabs, PROFILES.items()):
         with tab:
@@ -235,7 +250,7 @@ def show(db_query):
                         'Estimation': f"{p['probability']:.1%}", 'Historique': p['detail']
                     } for p in combo]), hide_index=True, use_container_width=True)
                     st.caption(f'Cote juste théorique : {1/prob:.2f}. Produit de probabilités sous hypothèse d’indépendance. Pas une cote bookmaker ni une recommandation de mise.')
-                    if st.button('☑️ Suivre ce combiné', key=f'track_{name}_{rank}_{"_".join(str(p["game_id"]) for p in combo)}'):
+                    if st.button('☑️ Suivre ce combiné', key=f'track_{mode}_{name}_{rank}_{"_".join(str(p["game_id"]) for p in combo)}'):
                         try:
                             inserted=follow(name,combo)
                             st.success('Combiné enregistré avant les matchs.' if inserted else 'Ce combiné est déjà suivi.')
