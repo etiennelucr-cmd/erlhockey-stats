@@ -5,6 +5,7 @@ from itertools import combinations
 import math
 import pandas as pd
 import streamlit as st
+from tracker_v14 import follow
 
 PARIS = ZoneInfo('Europe/Paris')
 FINISHED = ('OFF', 'FINAL')
@@ -234,4 +235,12 @@ def show(db_query):
                         'Estimation': f"{p['probability']:.1%}", 'Historique': p['detail']
                     } for p in combo]), hide_index=True, use_container_width=True)
                     st.caption(f'Cote juste théorique : {1/prob:.2f}. Produit de probabilités sous hypothèse d’indépendance. Pas une cote bookmaker ni une recommandation de mise.')
+                    if st.button('☑️ Suivre ce combiné', key=f'track_{name}_{rank}_{"_".join(str(p["game_id"]) for p in combo)}'):
+                        try:
+                            inserted=follow(name,combo)
+                            st.success('Combiné enregistré avant les matchs.' if inserted else 'Ce combiné est déjà suivi.')
+                        except ValueError as exc:
+                            st.warning(str(exc))
+                        except Exception:
+                            st.error('Enregistrement impossible : vérifie le schéma SQL V14 et la connexion Supabase.')
     st.caption('Ces profils ne mesurent pas la rentabilité : sans cotes et sans backtest, aucune value n’est démontrée. Les streaks peuvent s’interrompre et les joueurs être absents.')

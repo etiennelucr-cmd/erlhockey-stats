@@ -1,6 +1,6 @@
 # ErlHockey Stats V1 🏒
 
-Prototype Streamlit NHL, indépendant du bot Telegram et de Mi Español.
+Application Streamlit NHL avec statistiques, Combo Builder et suivi des combinés V14.
 
 ## Démarrer sur Windows
 
@@ -25,6 +25,6 @@ Créer un dépôt GitHub distinct, y ajouter les fichiers du dossier, puis dépl
 - Les données proviennent des API publiques NHL, sous réserve de disponibilité.
 - Les listes de joueurs proviennent des classements NHL (leaders) et ne couvrent pas forcément tous les joueurs.
 - Les pages 24 h et séries utilisent des approximations documentées ; elles ne doivent pas être interprétées comme un scan exhaustif.
-- La collecte 24 h/24, Supabase, l'historique persistant et Telegram **ne sont pas encore connectés**.
-- Ne jamais mettre un `.env`, un token Telegram ou un fichier `secrets.toml` dans GitHub.
+- La collecte NHL utilise GitHub Actions et Supabase ; vérifier les secrets et le schéma en production.
+- Ne jamais mettre un `.env`, un fichier `secrets.toml` dans GitHub.
 - Les anciens jetons partagés doivent être révoqués et remplacés.

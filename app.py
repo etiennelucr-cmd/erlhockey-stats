@@ -9,6 +9,7 @@ import streamlit as st
 import psycopg
 from betting_v12 import show as show_betting_v12
 from combo_v12 import show as show_combo_v12
+from tracker_v14 import show as show_tracker_v14
 
 st.set_page_config(page_title="ErlHockey Stats", page_icon="🏒", layout="wide")
 API = "https://api-web.nhle.com/v1"
@@ -27,12 +28,12 @@ def render_v12_hero(page_name):
     labels = {
         "🏠 Tableau de bord": ("Vue générale NHL", "Scores, rencontres et tendances du jour"),
         "🎯 Betting Center V12": ("Betting Center V12", "Matchs, joueurs, séries et probabilités expérimentales"),
-        "🧩 Combo Builder V13": ("Combo Builder V13", "Sélections personnalisables · matchs distincts · ce soir et demain"),
+        "🧩 Combo Builder V14": ("Combo Builder V14", "Sélections personnalisables · matchs distincts · ce soir et demain"),
         "🎯 NHL Picks": ("NHL Picks", "Statistiques et tendances des rencontres NHL"),
     }
     title, subtitle = labels.get(page_name, (page_name.split(" ", 1)[-1], "Statistiques NHL • Données réelles et historiques"))
     now = datetime.now(PARIS).strftime("%d/%m/%Y %H:%M")
-    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V13</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V14</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
     st.markdown(f'<div class="eh-hero"><div class="eyebrow">🏒 ERLHOCKEY · NHL ANALYTICS</div><h2>{html.escape(title)}</h2><p>{html.escape(subtitle)}</p></div>', unsafe_allow_html=True)
 
 
@@ -321,9 +322,9 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V13")
+    st.caption("NHL • Stats V14")
     page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
-                                 "🎯 Buts 5/5","🎯 Betting Center V12","🧩 Combo Builder V13","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"], key="navigation_page")
+                                 "🎯 Buts 5/5","🎯 Betting Center V12","🧩 Combo Builder V14","📊 Mes combinés V14","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique"], key="navigation_page")
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
         get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); perfect_five_streaks.clear(); recent_player_form.clear(); recent_team_form.clear(); db_query.clear(); st.rerun()
     st.caption("Données publiques NHL. Les statistiques peuvent être différées.")
@@ -356,8 +357,10 @@ try:
         st.caption("En NHL, il n'y a pas de match nul au résultat final : une égalité après 60 minutes mène à la prolongation ou aux tirs au but. La mention « match serré » n'est pas un pronostic de nul réglementaire. Gardiens, blessures et compositions non pris en compte.")
     elif page=="🎯 Betting Center V12":
         show_betting_v12(db_query)
-    elif page=="🧩 Combo Builder V13":
+    elif page=="🧩 Combo Builder V14":
         show_combo_v12(db_query)
+    elif page=="📊 Mes combinés V14":
+        show_tracker_v14()
     elif page=="🥅 Buts 3 sur 5":
         st.caption("Joueurs ayant marqué au moins un but dans 3 de leurs 5 derniers matchs terminés enregistrés dans Supabase.")
         st.info("Calcul fondé sur les matchs disponibles dans l'historique collecté (fenêtre actuelle limitée). Les joueurs ayant moins de 5 matchs enregistrés sont exclus.")
@@ -801,8 +804,6 @@ try:
         except Exception as exc:
             st.error("Impossible de lire l'historique Supabase.")
             st.caption(f"Détail : {type(exc).__name__}: {exc}")
-    elif page=="🔔 Alertes Telegram":
-        st.info("Connexion au bot Telegram prévue après la mise en place de la collecte permanente. Aucun message n'est envoyé depuis cette V1.")
 except requests.RequestException as e:
     st.error("Impossible de récupérer les données NHL pour le moment. Réessaie avec « Rafraîchir les données ».")
     st.caption(f"Détail technique : {type(e).__name__}")
