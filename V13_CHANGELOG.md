@@ -1,0 +1,1 @@
+ErlHockey V13 : ajout des probabilités exploratoires domicile/nul/extérieur en temps réglementaire au Combo Builder. Les 5 profils, le nombre flexible de sélections, le thème sombre et les workflows restent inchangés. Modèle Poisson non calibré, sans cotes, gardiens ni absences. Les tirs cadrés ne sont pas disponibles. Tester sur une branche avant déploiement.

@@ -2,9 +2,13 @@
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import requests
+from pathlib import Path
+import html
 import pandas as pd
 import streamlit as st
 import psycopg
+from betting_v12 import show as show_betting_v12
+from combo_v12 import show as show_combo_v12
 
 st.set_page_config(page_title="ErlHockey Stats", page_icon="🏒", layout="wide")
 API = "https://api-web.nhle.com/v1"
@@ -15,6 +19,22 @@ st.markdown("""<style>
 [data-testid="stMetric"]{background:#13273b;border:1px solid #27435b;border-radius:14px;padding:14px}
 h1,h2,h3{letter-spacing:-.02em}
 </style>""", unsafe_allow_html=True)
+
+# Visual theme is loaded locally; no external assets or API keys required.
+st.markdown("<style>" + (Path(__file__).parent / "theme_v12.css").read_text(encoding="utf-8") + "</style>", unsafe_allow_html=True)
+
+def render_v12_hero(page_name):
+    labels = {
+        "🏠 Tableau de bord": ("Vue générale NHL", "Scores, rencontres et tendances du jour"),
+        "🎯 Betting Center V12": ("Betting Center V12", "Matchs, joueurs, séries et probabilités expérimentales"),
+        "🧩 Combo Builder V13": ("Combo Builder V12", "Quatre sélections, quatre matchs différents — ce soir et demain"),
+        "🎯 NHL Picks": ("NHL Picks", "Statistiques et tendances des rencontres NHL"),
+    }
+    title, subtitle = labels.get(page_name, (page_name.split(" ", 1)[-1], "Statistiques NHL • Données réelles et historiques"))
+    now = datetime.now(PARIS).strftime("%d/%m/%Y %H:%M")
+    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V12</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="eh-hero"><div class="eyebrow">🏒 ERLHOCKEY · NHL ANALYTICS</div><h2>{html.escape(title)}</h2><p>{html.escape(subtitle)}</p></div>', unsafe_allow_html=True)
+
 
 @st.cache_data(ttl=180, show_spinner=False)
 def get_json(path):
@@ -301,14 +321,14 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V10")
+    st.caption("NHL • Stats V12")
     page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
-                                 "🎯 Buts 5/5","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"], key="navigation_page")
+                                 "🎯 Buts 5/5","🎯 Betting Center V12","🧩 Combo Builder V13","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"], key="navigation_page")
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
         get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); perfect_five_streaks.clear(); recent_player_form.clear(); recent_team_form.clear(); db_query.clear(); st.rerun()
     st.caption("Données publiques NHL. Les statistiques peuvent être différées.")
 
-st.title(page)
+render_v12_hero(page)
 st.caption("🏒 NHL • Données consultées à la demande • Heure de Paris")
 
 try:
@@ -334,6 +354,10 @@ try:
         else:
             st.info("Aucun match à venir aujourd'hui à analyser.")
         st.caption("En NHL, il n'y a pas de match nul au résultat final : une égalité après 60 minutes mène à la prolongation ou aux tirs au but. La mention « match serré » n'est pas un pronostic de nul réglementaire. Gardiens, blessures et compositions non pris en compte.")
+    elif page=="🎯 Betting Center V12":
+        show_betting_v12(db_query)
+    elif page=="🧩 Combo Builder V13":
+        show_combo_v12(db_query)
     elif page=="🥅 Buts 3 sur 5":
         st.caption("Joueurs ayant marqué au moins un but dans 3 de leurs 5 derniers matchs terminés enregistrés dans Supabase.")
         st.info("Calcul fondé sur les matchs disponibles dans l'historique collecté (fenêtre actuelle limitée). Les joueurs ayant moins de 5 matchs enregistrés sont exclus.")
@@ -787,4 +811,4 @@ except Exception as e:
     st.caption(f"Détail technique : {type(e).__name__}: {e}")
 
 st.divider()
-st.caption("ErlHockey Stats V11 • Collecte planifiée via GitHub Actions")
+st.caption("ErlHockey Stats V12 • Collecte planifiée via GitHub Actions")
