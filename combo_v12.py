@@ -141,7 +141,7 @@ PROFILES = {
 }
 
 
-def build_combos(picks, legs=4, top_n=3, profile='Équilibré'):
+def build_combos(picks, legs=4, top_n=3, profile='Équilibré', diversify=False):
     """Construct combinations from distinct fixtures using profile probability bands.
 
     No claim of 'safety' or positive expected value: estimates are uncalibrated.
@@ -173,7 +173,10 @@ def build_combos(picks, legs=4, top_n=3, profile='Équilibré'):
         probability = math.prod(x['probability'] for x in combo)
         score = sum(abs(x['probability'] - config['target']) for x in combo)
         results.append((score, -probability, tuple(sorted(combo, key=lambda x: x['time']))))
-    results.sort(key=lambda x: (x[0], x[1]))
+    if diversify:
+        results.sort(key=lambda x: (-len({p['market'] for p in x[2]}), x[0], x[1]))
+    else:
+        results.sort(key=lambda x: (x[0], x[1]))
     return [(-neg_prob, combo) for _, neg_prob, combo in results[:top_n]]
 
 
@@ -208,15 +211,20 @@ def show(db_query):
             hide_index=True, use_container_width=True)
     st.subheader('🧩 Les 5 profils du Combo Builder')
     st.caption('« Prudent » signifie uniquement des probabilités estimées plus élevées, pas un pari sûr. Aucun profil ne garantit un gain.')
+    adaptive = st.checkbox('Adapter automatiquement le nombre de sélections si un profil manque de matchs éligibles', value=False, key='combo_adaptive')
+    diversify = st.checkbox('Diversifier les marchés lorsque possible (joueurs et matchs)', value=True, key='combo_diversify')
     tabs = st.tabs([f'{name}' for name in PROFILES])
     for tab, (name, config) in zip(tabs, PROFILES.items()):
         with tab:
             low, high = config['range']
             st.caption(f"{config['description']} Plage cible par sélection : {low:.0%}–{high:.0%}.")
-            combos = build_combos(picks, legs=legs, top_n=3, profile=name)
+            available = len({p['game_id'] for p in picks if low <= p['probability'] <= high})
+            actual_legs = min(legs, available) if adaptive else legs
+            if actual_legs < legs and actual_legs >= 2:
+                st.info(f'Profil {name} : {actual_legs} sélections au lieu de {legs}, car seulement {available} matchs sont éligibles.')
+            combos = build_combos(picks, legs=actual_legs if actual_legs >= 2 else legs, top_n=3, profile=name, diversify=diversify)
             if not combos:
-                available = len({p['game_id'] for p in picks if low <= p['probability'] <= high})
-                st.warning(f'Pas de combiné {name.lower()} disponible : seulement {available} matchs distincts ont une sélection dans cette plage (minimum {legs}).')
+                st.warning(f'Pas de combiné {name.lower()} disponible : seulement {available} matchs distincts ont une sélection dans cette plage (minimum {2 if adaptive else legs}).')
                 continue
             for rank, (prob, combo) in enumerate(combos, 1):
                 with st.expander(f'Combo {rank} — probabilité théorique {prob:.1%}', expanded=rank == 1):

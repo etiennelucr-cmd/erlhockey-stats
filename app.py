@@ -27,12 +27,12 @@ def render_v12_hero(page_name):
     labels = {
         "🏠 Tableau de bord": ("Vue générale NHL", "Scores, rencontres et tendances du jour"),
         "🎯 Betting Center V12": ("Betting Center V12", "Matchs, joueurs, séries et probabilités expérimentales"),
-        "🧩 Combo Builder V13": ("Combo Builder V12", "Quatre sélections, quatre matchs différents — ce soir et demain"),
+        "🧩 Combo Builder V13": ("Combo Builder V13", "Sélections personnalisables · matchs distincts · ce soir et demain"),
         "🎯 NHL Picks": ("NHL Picks", "Statistiques et tendances des rencontres NHL"),
     }
     title, subtitle = labels.get(page_name, (page_name.split(" ", 1)[-1], "Statistiques NHL • Données réelles et historiques"))
     now = datetime.now(PARIS).strftime("%d/%m/%Y %H:%M")
-    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V12</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V13</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
     st.markdown(f'<div class="eh-hero"><div class="eyebrow">🏒 ERLHOCKEY · NHL ANALYTICS</div><h2>{html.escape(title)}</h2><p>{html.escape(subtitle)}</p></div>', unsafe_allow_html=True)
 
 
@@ -321,7 +321,7 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V12")
+    st.caption("NHL • Stats V13")
     page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
                                  "🎯 Buts 5/5","🎯 Betting Center V12","🧩 Combo Builder V13","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique","🔔 Alertes Telegram"], key="navigation_page")
     if st.button("🔄 Rafraîchir les données", use_container_width=True):

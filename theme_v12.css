@@ -1,7 +1,7 @@
 /* ErlHockey V12 — visual theme, no business logic changed */
 :root{--eh-bg:#070e18;--eh-panel:#101c2a;--eh-line:#253c55;--eh-blue:#087bfa;--eh-text:#eaf3ff}
 .stApp{background:radial-gradient(ellipse at 90% 0%,#122b47 0%,transparent 38%),linear-gradient(160deg,#070e18,#0b1725 65%,#07111c);color:var(--eh-text)}
-.block-container{max-width:1540px!important;padding-top:1rem!important;padding-bottom:3rem!important}
+.block-container{max-width:1540px!important;padding-top:4.5rem!important;padding-bottom:3rem!important}
 [data-testid="stSidebar"]{background:linear-gradient(180deg,#091522,#0a101b)!important;border-right:1px solid #24354a}
 [data-testid="stSidebar"] [data-testid="stRadio"] label{border-radius:9px;padding:5px 7px;transition:background .15s}
 [data-testid="stSidebar"] [data-testid="stRadio"] label:hover{background:#142c45}
@@ -26,3 +26,8 @@ h1{font-weight:800!important}h2{font-size:1.5rem!important}h3{font-size:1.18rem!
 .eh-topline{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin:0 0 12px;color:#a9c6e2;font-size:12px}
 .eh-online{color:#52e5a4;background:#113c34;border:1px solid #226450;padding:4px 9px;border-radius:99px}
 @media(max-width:760px){.block-container{padding-left:.8rem!important;padding-right:.8rem!important}.eh-hero{padding:18px}.eh-hero h2{font-size:27px!important}}
+
+/* V13: reserve space for Streamlit's fixed top toolbar */
+[data-testid="stAppViewContainer"] > .main .block-container{padding-top:4.5rem!important;}
+.eh-hero{isolation:isolate;}
+@media(max-width:760px){[data-testid="stAppViewContainer"] > .main .block-container{padding-top:4rem!important;}}
