@@ -31,3 +31,9 @@ h1{font-weight:800!important}h2{font-size:1.5rem!important}h3{font-size:1.18rem!
 [data-testid="stAppViewContainer"] > .main .block-container{padding-top:4.5rem!important;}
 .eh-hero{isolation:isolate;}
 @media(max-width:760px){[data-testid="stAppViewContainer"] > .main .block-container{padding-top:4rem!important;}}
+
+/* V15: improved contrast and spacing for dashboard / player tables */
+[data-testid="stDataFrame"] { border-radius: 14px; overflow: hidden; border: 1px solid #29425b; }
+[data-testid="stMetric"] { background: linear-gradient(140deg,#10283e,#123653); border:1px solid #2c5679; border-radius:16px; }
+[data-testid="stMetricValue"] { color:#f4f9ff; }
+[data-testid="stExpander"] { border:1px solid #2a4861; border-radius:12px; }

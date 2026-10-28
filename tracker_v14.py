@@ -85,3 +85,42 @@ def show():
             sub=legs[legs.combo_id==row.id]
             st.dataframe(sub[['match_label','selection','status','probability','kickoff']],hide_index=True,use_container_width=True)
     st.caption('Ce suivi mesure les résultats des combinés sélectionnés, pas la rentabilité. Aucun pari n’est placé depuis ErlHockey.')
+
+def dashboard_summary():
+    """Real tracked combo and leg statuses, no fabricated results."""
+    try:
+        with connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT status, count(*) FROM tracked_combos GROUP BY status")
+                combos=dict(cur.fetchall())
+                cur.execute("SELECT status, count(*) FROM tracked_legs GROUP BY status")
+                legs=dict(cur.fetchall())
+                cur.execute('''SELECT c.profile,c.created_at,c.status,
+                    COUNT(l.id) AS total,
+                    COUNT(*) FILTER (WHERE l.status='won') AS won,
+                    COUNT(*) FILTER (WHERE l.status='lost') AS lost,
+                    COUNT(*) FILTER (WHERE l.status NOT IN ('won','lost')) AS unresolved
+                    FROM tracked_combos c JOIN tracked_legs l ON l.combo_id=c.id
+                    GROUP BY c.id ORDER BY c.created_at DESC LIMIT 8''')
+                recent=cur.fetchall()
+    except Exception as exc:
+        st.info('Bilan indisponible : vérifie la connexion Supabase et les tables V14.')
+        st.caption(type(exc).__name__)
+        return
+    won=int(combos.get('won',0)); lost=int(combos.get('lost',0))
+    a,b,c,d=st.columns(4)
+    a.metric('Combinés gagnés',won)
+    b.metric('Combinés perdus',lost)
+    c.metric('Sélections gagnées',int(legs.get('won',0)))
+    d.metric('Réussite combinés',f'{won/(won+lost):.1%}' if won+lost else '—')
+    if recent:
+        st.markdown('**Derniers combinés suivis**')
+        rows=[]
+        for profile,created,status,total,leg_won,leg_lost,unresolved in recent:
+            rows.append({'Profil':profile,'Date (Paris)':created.astimezone(PARIS).strftime('%d/%m %H:%M'),
+                         'Résultat':{'won':'✅ Gagné','lost':'❌ Perdu','pending':'⏳ En attente','void':'↩️ Annulé'}.get(status,status),
+                         'Sélections gagnées':f'{leg_won}/{total}', 'Sélections perdues':int(leg_lost),
+                         'En attente / annulées':int(unresolved)})
+        st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
+    else:
+        st.info('Aucun combiné suivi pour le moment.')

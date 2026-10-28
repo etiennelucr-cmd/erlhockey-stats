@@ -26,14 +26,15 @@ st.markdown("<style>" + (Path(__file__).parent / "theme_v12.css").read_text(enco
 
 def render_v12_hero(page_name):
     labels = {
-        "🏠 Tableau de bord": ("Vue générale NHL", "Scores, rencontres et tendances du jour"),
+        "🏠 Tableau de bord": ("Tableau de bord V15", "Matchs du jour et demain · résultats des combinés suivis"),
+        "🔥 Points 5/5": ("Points 5/5", "Joueurs en série qui jouent aujourd’hui ou demain"),
         "🎯 Betting Center V12": ("Betting Center V12", "Matchs, joueurs, séries et probabilités expérimentales"),
         "🧩 Combo Builder V14": ("Combo Builder V14", "Sélections personnalisables · matchs distincts · ce soir et demain"),
         "🎯 NHL Picks": ("NHL Picks", "Statistiques et tendances des rencontres NHL"),
     }
     title, subtitle = labels.get(page_name, (page_name.split(" ", 1)[-1], "Statistiques NHL • Données réelles et historiques"))
     now = datetime.now(PARIS).strftime("%d/%m/%Y %H:%M")
-    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V14</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V15</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
     st.markdown(f'<div class="eh-hero"><div class="eyebrow">🏒 ERLHOCKEY · NHL ANALYTICS</div><h2>{html.escape(title)}</h2><p>{html.escape(subtitle)}</p></div>', unsafe_allow_html=True)
 
 
@@ -146,7 +147,9 @@ def recent_player_form():
                COUNT(*) FILTER (WHERE points > 0) AS matchs_avec_point,
                SUM(CASE WHEN rn <= 2 THEN points ELSE 0 END) AS points_2,
                COUNT(*) FILTER (WHERE rn <= 2 AND points > 0) AS matchs_avec_point_2,
-               STRING_AGG(points::text, ' - ' ORDER BY rn) AS points_par_match
+               STRING_AGG(points::text, ' - ' ORDER BY rn) AS points_par_match,
+               STRING_AGG(goals::text, ' - ' ORDER BY rn) AS buts_par_match,
+               COUNT(*) FILTER (WHERE goals > 0) AS matchs_avec_but
         FROM ranked WHERE rn <= 5 GROUP BY player_id
         HAVING COUNT(*) = 5
     """)
@@ -322,9 +325,8 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V14")
-    page=st.radio("Navigation", ["🏠 Tableau de bord","🥅 Buts 3 sur 5","⭐ Points 24 h","🔥 Points 5/5",
-                                 "🎯 Buts 5/5","🎯 Betting Center V12","🧩 Combo Builder V14","📊 Mes combinés V14","🎯 NHL Picks","📈 Séries 24 h","👤 Statistiques joueurs","📅 Matchs NHL","📊 Historique"], key="navigation_page")
+    st.caption("NHL • Stats V15")
+    page=st.radio("Navigation", ["🏠 Tableau de bord", "🔥 Points 5/5", "🎯 Betting Center V12", "🧩 Combo Builder V14", "📊 Mes combinés V14", "🎯 NHL Picks"], key="navigation_page")
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
         get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); perfect_five_streaks.clear(); recent_player_form.clear(); recent_team_form.clear(); db_query.clear(); st.rerun()
     st.caption("Données publiques NHL. Les statistiques peuvent être différées.")
@@ -340,6 +342,10 @@ try:
         live=sum(g.get("gameState") in ("LIVE","CRIT") for g in games)
         a,b,c=st.columns(3)
         a.metric("Matchs du jour",len(games)); b.metric("Terminés",completed); c.metric("En cours",live)
+        st.subheader('📊 Mes combinés — bilan réel')
+        from tracker_v14 import dashboard_summary
+        dashboard_summary()
+        st.caption('Un combiné perdu peut contenir plusieurs sélections gagnées. Les résultats en attente ne sont pas considérés comme perdus.')
         st.subheader("📅 Matchs du jour")
         show_table(matches_table(games))
         st.subheader("🔮 Prédictions — matchs du jour")
@@ -376,30 +382,36 @@ try:
                 "points_total":"Points (5 matchs)", "buts_par_match":"Buts par match (récent → ancien)"
             })
             st.dataframe(results.drop(columns=["player_id"]), hide_index=True, use_container_width=True)
-    elif page in ("🔥 Points 5/5", "🎯 Buts 5/5"):
-        is_points = page == "🔥 Points 5/5"
-        statistic = "points" if is_points else "goals"
-        st.caption(
-            "Joueurs ayant obtenu au moins un point dans chacun de leurs cinq derniers matchs terminés."
-            if is_points else
-            "Joueurs ayant marqué au moins un but dans chacun de leurs cinq derniers matchs terminés."
-        )
-        st.info("Données Supabase : cinq matchs terminés requis par joueur. Calcul sur l'historique actuellement collecté.")
-        with st.spinner("Calcul des séries depuis Supabase…"):
-            results = perfect_five_streaks(statistic)
-        if results.empty:
-            st.info("Aucun joueur ne répond actuellement à ce critère dans les données enregistrées.")
+    elif page=="🔥 Points 5/5":
+        st.caption("Joueurs ayant marqué au moins un point lors de chacun des cinq derniers matchs, et dont l'équipe joue aujourd'hui ou demain (heure de Paris).")
+        games=upcoming_games(2)
+        schedule={}
+        now_utc=datetime.now(timezone.utc)
+        for g in games:
+            try:
+                kickoff=datetime.fromisoformat(g['startTimeUTC'].replace('Z','+00:00'))
+            except (KeyError, ValueError, AttributeError):
+                continue
+            if kickoff < now_utc or kickoff.astimezone(PARIS).date() not in (today,today+timedelta(days=1)):
+                continue
+            away=g.get('awayTeam',{}).get('abbrev','?'); home=g.get('homeTeam',{}).get('abbrev','?')
+            for team in (away,home):
+                schedule.setdefault(team,(game_time(g),f'{away} @ {home}',home if team==away else away))
+        if not schedule:
+            st.info('Aucun match futur aujourd’hui ou demain.')
         else:
-            st.metric("Joueurs qualifiés", len(results))
-            results = results.rename(columns={
-                "joueur": "Joueur", "equipe": "Équipe",
-                "matchs_analyses": "Matchs analysés",
-                "buts_total": "Buts (5 matchs)",
-                "points_total": "Points (5 matchs)",
-                "serie_par_match": ("Points par match (récent → ancien)" if is_points
-                                    else "Buts par match (récent → ancien)")
-            })
-            st.dataframe(results.drop(columns=["player_id"]), hide_index=True, use_container_width=True)
+            form=recent_player_form()
+            form=form[(form['equipe'].isin(schedule)) & (form['matchs_avec_point']==5)].copy()
+            if form.empty:
+                st.info('Aucun joueur 5/5 avec match à venir dans cette période.')
+            else:
+                form['Heure (Paris)']=form['equipe'].map(lambda t:schedule[t][0])
+                form['Match']=form['equipe'].map(lambda t:schedule[t][1])
+                form['Adversaire']=form['equipe'].map(lambda t:schedule[t][2])
+                form=form.sort_values(['points_5','points_2'],ascending=False)
+                st.metric('Joueurs 5/5 jouant aujourd’hui ou demain',len(form))
+                st.dataframe(form.rename(columns={'joueur':'Joueur','equipe':'Équipe','points_5':'Points / 5','buts_5':'Buts / 5','points_par_match':'Points (récent → ancien)','buts_par_match':'Buts (récent → ancien)'})[['Heure (Paris)','Match','Joueur','Équipe','Adversaire','Points / 5','Buts / 5','Points (récent → ancien)','Buts (récent → ancien)']],hide_index=True,use_container_width=True)
+        st.caption('Statistiques sur les cinq derniers matchs terminés disponibles ; participation non garantie.')
     elif page=="📈 Séries 24 h":
         st.caption("Joueurs ayant obtenu un point dans au moins 3 de leurs 5 derniers matchs et dont l'équipe joue dans les 24 prochaines heures.")
         st.info("Fenêtre glissante de 24 heures calculée à partir des horaires officiels de début des matchs NHL (heure de Paris). Seuls les matchs non commencés sont retenus.")
@@ -543,7 +555,10 @@ try:
                             'Signal': signal, 'Score indicatif': score,
                             'Matchs avec point / 5': played, 'Points / 5': points,
                             'Points / 2 derniers': recent_points,
-                            'Points par match (récent → ancien)': p['points_par_match']
+                            'Points par match (récent → ancien)': p['points_par_match'],
+                            'Buts par match (récent → ancien)': p['buts_par_match'],
+                            '% matchs avec point (5)': f"{played / 5:.0%}",
+                            '% matchs avec but (5)': f"{int(p['matchs_avec_but']) / 5:.0%}"
                         })
                 rows.sort(key=lambda r: (-r['Score indicatif'], -r['Matchs avec point / 5'],
                                          -r['Points / 5'], r['Joueur']))
