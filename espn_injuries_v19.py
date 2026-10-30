@@ -9,6 +9,7 @@ import psycopg
 from availability_v17 import _norm
 
 URL = 'https://www.espn.com/nhl/injuries'
+API_URL = 'https://site.api.espn.com/apis/site/v2/sports/hockey/nhl/injuries'
 TEAM_ALIASES = {'anaheim ducks':'ANA','boston bruins':'BOS','buffalo sabres':'BUF',
 'calgary flames':'CGY','carolina hurricanes':'CAR','chicago blackhawks':'CHI',
 'colorado avalanche':'COL','columbus blue jackets':'CBJ','dallas stars':'DAL',
@@ -73,18 +74,76 @@ def parse_espn(html):
     return list({(_norm(n),t):(n,t,s,d) for n,t,s,d in reports}.values())
 
 
+def parse_espn_api(payload):
+    """Parse ESPN league injury JSON; reject unrecognized/empty responses.
+
+    This endpoint is unofficial and can change without notice.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError('Réponse JSON ESPN non reconnue')
+    groups = payload.get('injuries') or payload.get('items') or []
+    if not isinstance(groups, list) or not groups:
+        raise ValueError('API ESPN sans groupes de blessures exploitables')
+    reports = []
+    for group in groups:
+        if not isinstance(group, dict):
+            continue
+        team_obj = group.get('team') or {}
+        if isinstance(team_obj, str):
+            team_obj = {'displayName': team_obj}
+        team_name = str(team_obj.get('displayName') or team_obj.get('name') or group.get('displayName') or '')
+        abbr = str(team_obj.get('abbreviation') or '').upper()
+        if abbr not in set(TEAM_ALIASES.values()):
+            abbr = TEAM_ALIASES.get(_norm(team_name))
+        if not abbr:
+            continue
+        entries = group.get('injuries') or group.get('items') or []
+        if not isinstance(entries, list):
+            continue
+        for item in entries:
+            if not isinstance(item, dict):
+                continue
+            athlete = item.get('athlete') or {}
+            if isinstance(athlete, str):
+                athlete = {'displayName': athlete}
+            name = athlete.get('displayName') or athlete.get('fullName') or item.get('name')
+            status_obj = item.get('status') or item.get('type') or item.get('injuryStatus') or ''
+            status = (status_obj.get('name') or status_obj.get('description') or status_obj.get('type') or '') if isinstance(status_obj,dict) else str(status_obj)
+            detail = item.get('details') or item.get('description') or item.get('comment') or ''
+            if isinstance(detail,dict):
+                detail = detail.get('detail') or detail.get('description') or ''
+            if name and status:
+                reports.append((str(name),abbr,str(status),str(detail)))
+    if not reports:
+        raise ValueError('API ESPN: aucun joueur blessé identifiable (schéma modifié ou données vides)')
+    return list({(_norm(n),t):(n,t,s,d) for n,t,s,d in reports}.values())
+
+
 def fetch_reports():
-    """Fetch ESPN and validate; do not claim an empty/blocked page is healthy."""
+    """Prefer ESPN JSON; fall back to HTML. Never accept empty as success."""
     headers = {'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
-               'Accept':'text/html,application/xhtml+xml', 'Accept-Language':'en-US,en;q=0.9'}
-    response = requests.get(URL, headers=headers, timeout=25)
-    response.raise_for_status()
-    html = response.text
-    if len(html) < 1000 or any(token in html.lower() for token in ('captcha-delivery.com','cf-chl-','access denied')):
-        raise ValueError('ESPN a renvoyé une page bloquée ou incomplète')
-    reports = parse_espn(html)
-    print(f'ESPN: {len(reports)} lignes valides extraites de la page HTML')
-    return reports
+               'Accept':'application/json,text/html;q=0.9', 'Accept-Language':'en-US,en;q=0.9'}
+    failures=[]
+    try:
+        response=requests.get(API_URL,headers=headers,timeout=25)
+        response.raise_for_status()
+        reports=parse_espn_api(response.json())
+        print(f'ESPN API JSON: {len(reports)} blessures valides')
+        return reports
+    except (requests.RequestException,ValueError,TypeError) as exc:
+        failures.append(f'API JSON: {type(exc).__name__}: {str(exc)[:180]}')
+    try:
+        response=requests.get(URL,headers=headers,timeout=25)
+        response.raise_for_status()
+        html=response.text
+        if len(html)<1000 or any(token in html.lower() for token in ('captcha-delivery.com','cf-chl-','access denied')):
+            raise ValueError('page bloquée ou incomplète')
+        reports=parse_espn(html)
+        print(f'ESPN HTML: {len(reports)} blessures valides')
+        return reports
+    except (requests.RequestException,ValueError) as exc:
+        failures.append(f'HTML: {type(exc).__name__}: {str(exc)[:180]}')
+    raise RuntimeError('Synchronisation ESPN impossible. ' + ' | '.join(failures))
 
 def sync():
     db = os.environ['SUPABASE_DB_URL']
