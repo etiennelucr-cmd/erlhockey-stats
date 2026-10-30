@@ -87,7 +87,7 @@ def show(db_query):
         st.error('Impossible de récupérer les statistiques joueurs NHL.')
         st.caption(type(exc).__name__)
         return
-    # V17 strict availability: no unconfirmed player is silently promoted.
+    # V19.3 standard ESPN filter; unlisted does not mean confirmed.
     picks, excluded, unknown, fresh, source_msg = apply_injury_filter(picks, strict=False)
     st.caption(f'Présences V17 : {len(excluded)} choix exclus pour indisponibilité ; '
                f'{len(unknown)} non confirmés. {source_msg}. Joueurs non listés ESPN non garantis disponibles.')

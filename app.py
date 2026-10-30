@@ -553,7 +553,7 @@ try:
                             '% matchs avec point (5)': f"{played / 5:.0%}",
                             '% matchs avec but (5)': f"{int(p['matchs_avec_but']) / 5:.0%}"
                         })
-                # V17: NHL Picks only displays players with fresh, affirmative availability.
+                # V19.3: NHL Picks uses standard ESPN exclusion; unlisted is not confirmed.
                 rows, injured, unknown, fresh, source_msg = apply_injury_filter(rows, strict=False)
                 unverified_count = len(injured)
                 if unverified_count:

@@ -211,9 +211,14 @@ def show(db_query):
                     help='Joueurs : points, buts, 2+ points. Un seul joueur par rencontre dans chaque combiné.')
     player_picks = player_candidates(db_query, upcoming, window) if mode != 'Matchs uniquement' else []
     if mode != 'Matchs uniquement':
-        strict = st.checkbox('Exclure les joueurs dont la présence n’est pas confirmée (recommandé)', value=False, key='v17_strict_availability')
+        strict = st.radio('Vérification des présences', ['Standard — exclure les blessés ESPN', 'Strict — présence confirmée uniquement'], horizontal=True, key='v193_availability_mode', help='Standard : joueur non listé blessé ≠ présence confirmée. Strict : confirmation manuelle requise.') == 'Strict — présence confirmée uniquement'
         player_picks, excluded, unknown, fresh, source_msg = apply_injury_filter(player_picks, strict=strict)
-        st.caption(f'V19 • {len(excluded)} sélections écartées (blessure ESPN ou CSV), {len(unknown)} non confirmées. {source_msg}.')
+        st.caption(f'V19.3 • {len(excluded)} sélections écartées (ESPN/CSV), {len(unknown)} non confirmées. {source_msg}.')
+        if excluded:
+            with st.expander(f'Voir les {len(excluded)} sélections exclues'):
+                st.dataframe([{'Joueur': p.get('player_name', ''), 'Équipe': p.get('team', ''), 'Motif': p.get('availability_reason', '')} for p in excluded], hide_index=True, use_container_width=True)
+        if unknown and not strict and fresh:
+            st.caption('Mode standard : joueurs non listés blessés autorisés, mais participation non confirmée. Vérifier les alignements avant les matchs.')
         if not fresh:
             st.warning('Synchronisation ESPN indisponible ou périmée : aucune sélection joueur proposée sans confirmation manuelle.')
         if unknown and strict:

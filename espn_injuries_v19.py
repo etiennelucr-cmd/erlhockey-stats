@@ -188,26 +188,56 @@ def load_injury_reports(max_age_hours=24):
     except Exception as exc:
         return {},False,f'Statuts ESPN indisponibles : {type(exc).__name__}'
 
+def _matching_injury(name, team, reports):
+    """Match full names and NHL abbreviated first names, within the same team.
+
+    Ambiguous matches are treated as an injury flag (conservative); no fuzzy
+    matching across teams. Normalization is shared with the player database.
+    """
+    import re
+    target = _norm(name or '')
+    club = _norm(team or '')
+    direct = reports.get((target, club))
+    if direct:
+        return direct
+    parts = target.replace('.', ' ').split()
+    if len(parts) < 2:
+        return None
+    initial, surname = parts[0][0], ' '.join(parts[1:])
+    for (injured_name, injured_team), report in reports.items():
+        if injured_team != club:
+            continue
+        tokens = injured_name.replace('.', ' ').split()
+        if len(tokens) >= 2 and tokens[0][0] == initial and ' '.join(tokens[1:]) == surname:
+            return report
+    return None
+
+
 def apply_injury_filter(picks, strict=False):
-    """Never label an unlisted player as confirmed. Strict requires manual confirmation."""
+    """Standard: exclude ESPN-listed players; strict: require manual confirmation.
+
+    An unlisted player is NEVER described as officially confirmed. Stale ESPN
+    snapshots do not authorize unconfirmed players, in either mode.
+    """
     from availability_v17 import load_availability, player_status
-    reports,fresh,message=load_injury_reports()
-    manual=load_availability()
-    eligible=[];excluded=[];unknown=[]
+    reports, fresh, message = load_injury_reports()
+    manual = load_availability()
+    eligible, excluded, unknown = [], [], []
     for pick in picks:
-        name=pick.get('player_name') or pick.get('Joueur')
-        team=pick.get('team') or pick.get('Équipe')
-        injury=reports.get((_norm(name),_norm(team))) if fresh else None
-        manual_status=player_status(name,team,manual)
-        if injury or manual_status=='excluded':
-            excluded.append(pick)
-        elif manual_status=='confirmed':
-            eligible.append({**pick,'caveat':'Présence déclarée dans le CSV ; vérifier la composition officielle'})
+        name = pick.get('player_name') or pick.get('Joueur')
+        team = pick.get('team') or pick.get('Équipe')
+        injury = _matching_injury(name, team, reports) if fresh else None
+        manual_status = player_status(name, team, manual)
+        if injury or manual_status == 'excluded':
+            reason = ('ESPN : ' + str(injury.get('status', 'indisponible'))) if injury else 'Exclu dans le CSV'
+            excluded.append({**pick, 'availability_reason': reason})
+        elif manual_status == 'confirmed':
+            eligible.append({**pick, 'caveat': 'Présence déclarée dans le CSV ; vérifier la composition officielle'})
         else:
             unknown.append(pick)
             if fresh and not strict:
-                eligible.append({**pick,'caveat':'Non listé blessé par ESPN ; présence NON confirmée'})
-    return eligible,excluded,unknown,fresh,message
+                eligible.append({**pick, 'caveat': 'Non listé blessé par ESPN ; présence NON confirmée'})
+    return eligible, excluded, unknown, fresh, message
 
 if __name__=='__main__':
     sync()
