@@ -9,7 +9,9 @@ import streamlit as st
 import psycopg
 from betting_v12 import show as show_betting_v12
 from combo_v12 import show as show_combo_v12
+from availability_v17 import load_availability, player_status
 from tracker_v14 import show as show_tracker_v14
+from winning_selections_v18 import show as show_winning_v18
 
 st.set_page_config(page_title="ErlHockey Stats", page_icon="🏒", layout="wide")
 API = "https://api-web.nhle.com/v1"
@@ -30,11 +32,12 @@ def render_v12_hero(page_name):
         "🔥 Points 5/5": ("Points 5/5", "Joueurs en série qui jouent aujourd’hui ou demain"),
         "🎯 Betting Center V12": ("Betting Center V12", "Matchs, joueurs, séries et probabilités expérimentales"),
         "🧩 Combo Builder V14": ("Combo Builder V14", "Sélections personnalisables · matchs distincts · ce soir et demain"),
+        "🏆 Sélections gagnantes": ("Sélections gagnantes V18", "Rejouer les marchés historiquement gagnants lors des prochains matchs"),
         "🎯 NHL Picks": ("NHL Picks · Top 10", "Classement automatique des joueurs des matchs du jour et de demain"),
     }
     title, subtitle = labels.get(page_name, (page_name.split(" ", 1)[-1], "Statistiques NHL • Données réelles et historiques"))
     now = datetime.now(PARIS).strftime("%d/%m/%Y %H:%M")
-    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V16</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V18</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
     st.markdown(f'<div class="eh-hero"><div class="eyebrow">🏒 ERLHOCKEY · NHL ANALYTICS</div><h2>{html.escape(title)}</h2><p>{html.escape(subtitle)}</p></div>', unsafe_allow_html=True)
 
 
@@ -325,8 +328,8 @@ def show_table(rows, columns=None):
 
 with st.sidebar:
     st.title("🏒 ErlHockey")
-    st.caption("NHL • Stats V16")
-    page=st.radio("Navigation", ["🏠 Tableau de bord", "🔥 Points 5/5", "🎯 Betting Center V12", "🧩 Combo Builder V14", "📊 Mes combinés V14", "🎯 NHL Picks"], key="navigation_page")
+    st.caption("NHL • Stats V18")
+    page=st.radio("Navigation", ["🏠 Tableau de bord", "🔥 Points 5/5", "🎯 Betting Center V12", "🧩 Combo Builder V14", "🏆 Sélections gagnantes", "📊 Mes combinés V14", "🎯 NHL Picks"], key="navigation_page")
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
         get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); perfect_five_streaks.clear(); recent_player_form.clear(); recent_team_form.clear(); db_query.clear(); st.rerun()
     st.caption("Données publiques NHL. Les statistiques peuvent être différées.")
@@ -365,6 +368,8 @@ try:
         show_betting_v12(db_query)
     elif page=="🧩 Combo Builder V14":
         show_combo_v12(db_query)
+    elif page=="🏆 Sélections gagnantes":
+        show_winning_v18(db_query)
     elif page=="📊 Mes combinés V14":
         show_tracker_v14()
     elif page=="🥅 Buts 3 sur 5":
@@ -548,6 +553,14 @@ try:
                             '% matchs avec point (5)': f"{played / 5:.0%}",
                             '% matchs avec but (5)': f"{int(p['matchs_avec_but']) / 5:.0%}"
                         })
+                # V17: NHL Picks only displays players with fresh, affirmative availability.
+                availability = load_availability()
+                unverified_count = len(rows)
+                rows = [r for r in rows if player_status(r['Joueur'], r['Équipe'], availability) == 'confirmed']
+                unverified_count -= len(rows)
+                if unverified_count:
+                    st.caption(f'V17 : {unverified_count} joueurs écartés (absents, incertains ou non vérifiés). '
+                               'Les statuts proviennent du fichier CSV local, pas d’une source de blessures en direct.')
                 rows.sort(key=lambda r: (-r['Score indicatif'], -r['Matchs avec point / 5'],
                                          -r['Points / 5'], r['Joueur']))
                 st.caption(f"Top 10 automatique parmi {len(rows)} joueurs éligibles aux rencontres à venir. "

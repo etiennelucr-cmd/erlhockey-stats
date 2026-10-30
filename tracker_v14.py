@@ -9,6 +9,10 @@ import streamlit as st
 
 PARIS=ZoneInfo('Europe/Paris')
 
+def origin_label(profile):
+    return 'Sélections gagnantes' if str(profile).startswith('Sélections gagnantes') else 'Combo Builder'
+
+
 def connect():
     return psycopg.connect(st.secrets['SUPABASE_DB_URL'], connect_timeout=15)
 
@@ -64,6 +68,7 @@ def show():
     if df.empty:
         st.info('Aucun combiné sur cette période.')
         return
+    df['origine']=df['profile'].map(origin_label)
     st.subheader('Fiabilité de mes combinés suivis')
     summary=[]
     for profile, group in df.groupby('profile'):
@@ -79,9 +84,26 @@ def show():
         st.metric('Taux de réussite global',f'{(settled.status=="won").mean():.1%}',help='Combinés gagnés / combinés terminés (hors attente et annulation).')
     else:
         st.info('Pas encore de combinés terminés : aucun taux de réussite calculable.')
+    st.subheader('Bilan par générateur')
+    origin_rows=[]
+    for origin, group in df.groupby('origine'):
+        completed=group[group.status.isin(['won','lost'])]
+        origin_legs=legs[legs.combo_id.isin(group.id)]
+        nw=int((origin_legs.status=='won').sum())
+        nl=int((origin_legs.status=='lost').sum())
+        cw=int((completed.status=='won').sum())
+        cl=int((completed.status=='lost').sum())
+        origin_rows.append({'Origine':origin,'Combinés suivis':len(group),
+                            'Combinés gagnés':cw,'Combinés perdus':cl,
+                            'Ratio combinés':f'{cw/(cw+cl):.1%}' if cw+cl else '—',
+                            'Sélections gagnées':nw,'Sélections perdues':nl,
+                            'Ratio sélections':f'{nw/(nw+nl):.1%}' if nw+nl else '—'})
+    st.dataframe(pd.DataFrame(origin_rows),hide_index=True,use_container_width=True)
+    st.caption('Chaque sélection suivie est comptée une fois par combiné enregistré. '
+               'Une même prédiction suivie dans deux combinés différents compte dans chacun de leurs bilans.')
     st.subheader('Détail des suivis')
     for row in df.itertuples():
-        with st.expander(f'{row.profile} · {row.selections} sélections · {row.status} · {row.created_at.tz_convert(PARIS):%d/%m/%Y %H:%M}'):
+        with st.expander(f'{row.origine} · {row.profile} · {row.selections} sélections · {row.status} · {row.created_at.tz_convert(PARIS):%d/%m/%Y %H:%M}'):
             sub=legs[legs.combo_id==row.id]
             st.dataframe(sub[['match_label','selection','status','probability','kickoff']],hide_index=True,use_container_width=True)
     st.caption('Ce suivi mesure les résultats des combinés sélectionnés, pas la rentabilité. Aucun pari n’est placé depuis ErlHockey.')
@@ -108,16 +130,34 @@ def dashboard_summary():
         st.caption(type(exc).__name__)
         return
     won=int(combos.get('won',0)); lost=int(combos.get('lost',0))
-    a,b,c,d=st.columns(4)
+    a,b,c,d,e=st.columns(5)
     a.metric('Combinés gagnés',won)
     b.metric('Combinés perdus',lost)
     c.metric('Sélections gagnées',int(legs.get('won',0)))
-    d.metric('Réussite combinés',f'{won/(won+lost):.1%}' if won+lost else '—')
+    d.metric('Sélections perdues',int(legs.get('lost',0)))
+    leg_won=int(legs.get('won',0)); leg_lost=int(legs.get('lost',0))
+    e.metric('Ratio sélections',f'{leg_won/(leg_won+leg_lost):.1%}' if leg_won+leg_lost else '—',help='Gagnées / (gagnées + perdues), hors pending et void.')
+    st.caption(f'Réussite combinés : {won/(won+lost):.1%}' if won+lost else 'Réussite combinés : — (aucun combiné terminé)')
+    try:
+        with connect() as conn:
+            origins=pd.read_sql_query("""SELECT CASE WHEN c.profile LIKE 'Sélections gagnantes%' THEN 'Sélections gagnantes' ELSE 'Combo Builder' END AS origine,
+                COUNT(DISTINCT c.id) AS combos_suivis,
+                COUNT(DISTINCT c.id) FILTER (WHERE c.status='won') AS combos_gagnes,
+                COUNT(DISTINCT c.id) FILTER (WHERE c.status='lost') AS combos_perdus,
+                COUNT(l.id) FILTER (WHERE l.status='won') AS selections_gagnees,
+                COUNT(l.id) FILTER (WHERE l.status='lost') AS selections_perdues
+                FROM tracked_combos c LEFT JOIN tracked_legs l ON l.combo_id=c.id GROUP BY 1 ORDER BY 1""",conn)
+        if not origins.empty:
+            origins['Ratio sélections']=origins.apply(lambda r: f"{r.selections_gagnees/(r.selections_gagnees+r.selections_perdues):.1%}" if r.selections_gagnees+r.selections_perdues else '—',axis=1)
+            st.markdown('**Bilan par générateur**')
+            st.dataframe(origins.rename(columns={'origine':'Origine','combos_suivis':'Combinés suivis','combos_gagnes':'Combinés gagnés','combos_perdus':'Combinés perdus','selections_gagnees':'Sélections gagnées','selections_perdues':'Sélections perdues'}),hide_index=True,use_container_width=True)
+    except Exception:
+        st.caption('Détail par générateur temporairement indisponible.')
     if recent:
         st.markdown('**Derniers combinés suivis**')
         rows=[]
         for profile,created,status,total,leg_won,leg_lost,unresolved in recent:
-            rows.append({'Profil':profile,'Date (Paris)':created.astimezone(PARIS).strftime('%d/%m %H:%M'),
+            rows.append({'Origine':origin_label(profile),'Profil':profile,'Date (Paris)':created.astimezone(PARIS).strftime('%d/%m %H:%M'),
                          'Résultat':{'won':'✅ Gagné','lost':'❌ Perdu','pending':'⏳ En attente','void':'↩️ Annulé'}.get(status,status),
                          'Sélections gagnées':f'{leg_won}/{total}', 'Sélections perdues':int(leg_lost),
                          'En attente / annulées':int(unresolved)})

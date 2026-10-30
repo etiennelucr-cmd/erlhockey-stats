@@ -6,6 +6,7 @@ import math
 import pandas as pd
 import streamlit as st
 from tracker_v14 import follow
+from availability_v17 import load_availability, filter_player_picks
 
 PARIS = ZoneInfo('Europe/Paris')
 FINISHED = ('OFF', 'FINAL')
@@ -33,10 +34,16 @@ def poisson_over(expected, threshold):
     return max(0., min(1., 1 - sum(math.exp(-expected) * expected**k / math.factorial(k) for k in range(n))))
 
 
-def fixtures(db_query, now=None):
+def fixtures(db_query, now=None, period='Mixte'):
+    """Soirées NHL en heure de Paris : de midi à midi le lendemain.
+
+    Les matchs après minuit restent rattachés à la soirée précédente.
+    """
     now = now or datetime.now(PARIS)
-    # Two Paris calendar dates, with a future-only cutoff.
-    end = datetime.combine(now.date() + timedelta(days=2), datetime.min.time(), PARIS)
+    evening_start = datetime.combine(now.date(), datetime.min.time(), PARIS) + timedelta(hours=12)
+    if now < evening_start:
+        evening_start -= timedelta(days=1)
+    end = evening_start + timedelta(days=2)
     df = db_query('''SELECT game_id, start_time_utc, home_team, away_team, game_state
                      FROM nhl_games WHERE start_time_utc >= %s AND start_time_utc < %s
                      AND game_state NOT IN ('OFF','FINAL','LIVE','CRIT')
@@ -44,6 +51,11 @@ def fixtures(db_query, now=None):
     if df.empty:
         return df
     df['start_paris'] = pd.to_datetime(df.start_time_utc, utc=True).dt.tz_convert(PARIS)
+    boundary = evening_start + timedelta(days=1)
+    if period == 'Ce soir':
+        df = df[df.start_paris < boundary].copy()
+    elif period == 'Demain':
+        df = df[df.start_paris >= boundary].copy()
     return df
 
 
@@ -74,7 +86,7 @@ def player_candidates(db_query, upcoming, window=10):
             for label, values, target in [('1+ point', points, 1), ('2+ points', points, 2), ('1+ but', goals, 1)]:
                 p = smoothed_probability(values, target)
                 picks.append(dict(game_id=game.game_id, match=f'{game.away_team} @ {game.home_team}',
-                                  time=game.start_paris, selection=f'{row.player_name} — {label}',
+                                  time=game.start_paris, selection=f'{row.player_name} — {label}', player_name=row.player_name, team=row.team,
                                   market='points' if 'point' in label else 'goals', probability=p,
                                   streak=streak(values, target), hits=sum(v>=target for v in values), sample=len(values),
                                   detail=f'{sum(v>=target for v in values)}/{len(values)} matchs, streak {streak(values,target)}',
@@ -182,12 +194,14 @@ def build_combos(picks, legs=4, top_n=3, profile='Équilibré', diversify=False)
 
 
 def show(db_query):
-    st.caption('Nombre de sélections personnalisable • une seule sélection par match • ce soir et demain (heure de Paris). Estimations exploratoires non calibrées.')
+    st.caption('Période au choix : ce soir, demain ou mixte • une seule sélection par match • heure de Paris. Estimations exploratoires non calibrées.')
+    period = st.radio('Période des matchs', ['Ce soir', 'Demain', 'Mixte'], index=2, horizontal=True, key='combo_period_v17',
+                      help='Une soirée NHL va de midi à midi en heure de Paris : les matchs après minuit appartiennent à la soirée précédente.')
     window = st.select_slider('Historique utilisé', options=[5, 10, 20], value=10, key='combo_window')
     now = datetime.now(PARIS)
-    upcoming = fixtures(db_query, now)
+    upcoming = fixtures(db_query, now, period)
     if upcoming.empty:
-        st.warning('Aucun match à venir trouvé dans Supabase pour les deux dates civiles de Paris. Vérifie la synchronisation du calendrier.')
+        st.warning(f'Aucun match à venir pour « {period} ». Vérifie le calendrier ou choisis une autre période.')
         return
     st.dataframe(upcoming.assign(**{'Heure (Paris)': upcoming.start_paris.dt.strftime('%d/%m %H:%M'),
                                    'Match': upcoming.away_team + ' @ ' + upcoming.home_team})[['Heure (Paris)', 'Match']],
@@ -196,6 +210,15 @@ def show(db_query):
                     horizontal=True, key='combo_mode_v14',
                     help='Joueurs : points, buts, 2+ points. Un seul joueur par rencontre dans chaque combiné.')
     player_picks = player_candidates(db_query, upcoming, window) if mode != 'Matchs uniquement' else []
+    if mode != 'Matchs uniquement':
+        strict = st.checkbox('Exclure les joueurs dont la présence n’est pas confirmée (recommandé)', value=True, key='v17_strict_availability')
+        entries = load_availability()
+        player_picks, excluded, unknown = filter_player_picks(player_picks, entries, strict=strict)
+        st.caption(f'V17 • {len(excluded)} sélections écartées (joueur indisponible), {len(unknown)} avec statut non confirmé. '
+                   'Vérification basée sur player_availability_v17.csv (24 h maximum) ; aucune synchronisation blessures automatique.')
+        if unknown and strict:
+            st.warning('Présences non confirmées : sélections joueurs mises de côté. '
+                       'Renseigne le fichier de statuts avant de générer des combinés joueurs.')
     match_picks = match_candidates(db_query, upcoming, window) if mode != 'Joueurs uniquement' else []
     if mode == 'Joueurs uniquement':
         st.caption('Marchés disponibles : 1+ point, 1+ but et 2+ points. Historique récent et streaks pris en compte.')
@@ -206,7 +229,7 @@ def show(db_query):
         player_picks = [p for p in player_picks if p['selection'].split(' — ')[-1] in allowed]
     picks = player_picks + match_picks
     fixture_count = upcoming['game_id'].nunique()
-    st.caption(f'{fixture_count} match(s) au calendrier pour la période sélectionnée.')
+    st.caption(f'{fixture_count} match(s) disponibles · période : {period} · heure de Paris.')
     if fixture_count < 2:
         st.warning('Il faut au moins deux matchs distincts pour construire un combiné.')
         return
@@ -215,7 +238,7 @@ def show(db_query):
     if mode != 'Joueurs uniquement':
         st.info('Tirs cadrés indisponibles sans collecte de données. Vainqueurs en temps réglementaire estimés avec un modèle Poisson simplifié. Les absences et les gardiens ne sont pas intégrés.')
     else:
-        st.info('10 sélections nécessitent 10 matchs distincts avec des joueurs éligibles dans le profil choisi. La participation des joueurs n’est pas confirmée.')
+        st.info('10 sélections nécessitent 10 matchs distincts avec des joueurs éligibles dans le profil choisi. Les joueurs sans présence vérifiée sont exclus en mode strict.')
     if not picks:
         st.warning('Historique insuffisant pour produire des sélections.')
         return
