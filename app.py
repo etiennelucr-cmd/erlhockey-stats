@@ -9,7 +9,7 @@ import streamlit as st
 import psycopg
 from betting_v12 import show as show_betting_v12
 from combo_v12 import show as show_combo_v12
-from availability_v17 import load_availability, player_status
+from espn_injuries_v19 import apply_injury_filter
 from tracker_v14 import show as show_tracker_v14
 from winning_selections_v18 import show as show_winning_v18
 
@@ -554,13 +554,12 @@ try:
                             '% matchs avec but (5)': f"{int(p['matchs_avec_but']) / 5:.0%}"
                         })
                 # V17: NHL Picks only displays players with fresh, affirmative availability.
-                availability = load_availability()
-                unverified_count = len(rows)
-                rows = [r for r in rows if player_status(r['Joueur'], r['Équipe'], availability) == 'confirmed']
-                unverified_count -= len(rows)
+                rows, injured, unknown, fresh, source_msg = apply_injury_filter(rows, strict=False)
+                unverified_count = len(injured)
                 if unverified_count:
-                    st.caption(f'V17 : {unverified_count} joueurs écartés (absents, incertains ou non vérifiés). '
-                               'Les statuts proviennent du fichier CSV local, pas d’une source de blessures en direct.')
+                    st.caption(f'V19 : {unverified_count} joueurs exclus (blessures ESPN / CSV). {source_msg}.')
+                if unknown:
+                    st.warning(f'{len(unknown)} joueurs non confirmés : absence de la liste des blessures ≠ présence assurée.')
                 rows.sort(key=lambda r: (-r['Score indicatif'], -r['Matchs avec point / 5'],
                                          -r['Points / 5'], r['Joueur']))
                 st.caption(f"Top 10 automatique parmi {len(rows)} joueurs éligibles aux rencontres à venir. "

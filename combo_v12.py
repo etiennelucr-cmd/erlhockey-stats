@@ -6,7 +6,7 @@ import math
 import pandas as pd
 import streamlit as st
 from tracker_v14 import follow
-from availability_v17 import load_availability, filter_player_picks
+from espn_injuries_v19 import apply_injury_filter
 
 PARIS = ZoneInfo('Europe/Paris')
 FINISHED = ('OFF', 'FINAL')
@@ -211,11 +211,11 @@ def show(db_query):
                     help='Joueurs : points, buts, 2+ points. Un seul joueur par rencontre dans chaque combiné.')
     player_picks = player_candidates(db_query, upcoming, window) if mode != 'Matchs uniquement' else []
     if mode != 'Matchs uniquement':
-        strict = st.checkbox('Exclure les joueurs dont la présence n’est pas confirmée (recommandé)', value=True, key='v17_strict_availability')
-        entries = load_availability()
-        player_picks, excluded, unknown = filter_player_picks(player_picks, entries, strict=strict)
-        st.caption(f'V17 • {len(excluded)} sélections écartées (joueur indisponible), {len(unknown)} avec statut non confirmé. '
-                   'Vérification basée sur player_availability_v17.csv (24 h maximum) ; aucune synchronisation blessures automatique.')
+        strict = st.checkbox('Exclure les joueurs dont la présence n’est pas confirmée (recommandé)', value=False, key='v17_strict_availability')
+        player_picks, excluded, unknown, fresh, source_msg = apply_injury_filter(player_picks, strict=strict)
+        st.caption(f'V19 • {len(excluded)} sélections écartées (blessure ESPN ou CSV), {len(unknown)} non confirmées. {source_msg}.')
+        if not fresh:
+            st.warning('Synchronisation ESPN indisponible ou périmée : aucune sélection joueur proposée sans confirmation manuelle.')
         if unknown and strict:
             st.warning('Présences non confirmées : sélections joueurs mises de côté. '
                        'Renseigne le fichier de statuts avant de générer des combinés joueurs.')

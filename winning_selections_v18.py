@@ -9,7 +9,7 @@ import math
 import pandas as pd
 import streamlit as st
 from combo_v12 import fixtures, player_candidates, PARIS
-from availability_v17 import load_availability, filter_player_picks
+from espn_injuries_v19 import apply_injury_filter
 from tracker_v14 import connect, follow
 
 
@@ -88,9 +88,11 @@ def show(db_query):
         st.caption(type(exc).__name__)
         return
     # V17 strict availability: no unconfirmed player is silently promoted.
-    picks, excluded, unknown = filter_player_picks(picks, load_availability(), strict=True)
+    picks, excluded, unknown, fresh, source_msg = apply_injury_filter(picks, strict=False)
     st.caption(f'Présences V17 : {len(excluded)} choix exclus pour indisponibilité ; '
-               f'{len(unknown)} non confirmés exclus. Statuts issus du CSV local, non actualisés automatiquement.')
+               f'{len(unknown)} non confirmés. {source_msg}. Joueurs non listés ESPN non garantis disponibles.')
+    if not fresh:
+        st.warning('ESPN non synchronisé : seules les présences confirmées manuellement sont autorisées.')
     matches = eligible_replays(picks, history, int(min_wins), min_rate)
     if not matches:
         st.warning('Aucune ancienne sélection gagnante éligible pour ces matchs. Vérifie les statuts joueurs et/ou réduis les seuils.')

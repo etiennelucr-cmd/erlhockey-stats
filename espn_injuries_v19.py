@@ -1,0 +1,129 @@
+"""ESPN injury snapshot. Injury listings are NOT proof that unlisted players will play."""
+import os
+import re
+from datetime import datetime, timezone, timedelta
+from io import StringIO
+import pandas as pd
+import requests
+import psycopg
+from availability_v17 import _norm
+
+URL = 'https://www.espn.com/nhl/injuries'
+TEAM_ALIASES = {'anaheim ducks':'ANA','boston bruins':'BOS','buffalo sabres':'BUF',
+'calgary flames':'CGY','carolina hurricanes':'CAR','chicago blackhawks':'CHI',
+'colorado avalanche':'COL','columbus blue jackets':'CBJ','dallas stars':'DAL',
+'detroit red wings':'DET','edmonton oilers':'EDM','florida panthers':'FLA',
+'los angeles kings':'LAK','minnesota wild':'MIN','montreal canadiens':'MTL',
+'nashville predators':'NSH','new jersey devils':'NJD','new york islanders':'NYI',
+'new york rangers':'NYR','ottawa senators':'OTT','philadelphia flyers':'PHI',
+'pittsburgh penguins':'PIT','san jose sharks':'SJS','seattle kraken':'SEA',
+'st louis blues':'STL','tampa bay lightning':'TBL','toronto maple leafs':'TOR',
+'utah mammoth':'UTA','utah hockey club':'UTA','vancouver canucks':'VAN',
+'vegas golden knights':'VGK','washington capitals':'WSH','winnipeg jets':'WPG'}
+
+SCHEMA = '''CREATE TABLE IF NOT EXISTS nhl_injury_reports_v19 (
+ player_name TEXT NOT NULL, team TEXT NOT NULL, status TEXT NOT NULL,
+ detail TEXT, checked_at_utc TIMESTAMPTZ NOT NULL,
+ PRIMARY KEY(player_name,team));
+ CREATE TABLE IF NOT EXISTS nhl_injury_sync_v19 (
+ id INTEGER PRIMARY KEY CHECK (id=1), checked_at_utc TIMESTAMPTZ,
+ last_success_at TIMESTAMPTZ, source TEXT, error TEXT, count INTEGER NOT NULL DEFAULT 0);'''
+
+def parse_espn(html):
+    """Read ESPN team headings and adjacent injury tables; reject uncertain layouts."""
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(html, 'html.parser')
+    reports = []
+    for table in soup.find_all('table'):
+        heading = table.find_previous(['h2','h3','h4'])
+        if heading is None:
+            continue
+        team_name = _norm(heading.get_text(' ', strip=True))
+        team = next((abbr for name,abbr in TEAM_ALIASES.items() if name in team_name), None)
+        if not team:
+            continue
+        headers = [_norm(c.get_text(' ',strip=True)) for c in table.select('thead th')]
+        if not headers or not any('status' in h for h in headers):
+            continue
+        for tr in table.select('tbody tr'):
+            cols = [c.get_text(' ',strip=True) for c in tr.find_all(['td','th'],recursive=False)]
+            if len(cols) != len(headers):
+                continue
+            row = dict(zip(headers,cols))
+            name = row.get('name') or row.get('player') or ''
+            status = row.get('status','')
+            if name and status:
+                reports.append((name,team,status,row.get('comment','') or row.get('details','')))
+    # Empty pages are not treated as a successful no-injury report.
+    if not reports:
+        raise ValueError('Aucune table blessures ESPN reconnue (page bloquée ou format modifié).')
+    return list({(_norm(n),t):(n,t,s,d) for n,t,s,d in reports}.values())
+
+def sync():
+    db = os.environ['SUPABASE_DB_URL']
+    now = datetime.now(timezone.utc)
+    try:
+        resp = requests.get(URL, headers={'User-Agent':'Mozilla/5.0 (compatible; ErlHockey/1.0)','Accept-Language':'en-US,en;q=0.9'},timeout=25)
+        resp.raise_for_status()
+        reports = parse_espn(resp.text)
+        with psycopg.connect(db) as conn:
+            with conn.cursor() as cur:
+                cur.execute(SCHEMA)
+                cur.execute('DELETE FROM nhl_injury_reports_v19')
+                cur.executemany('INSERT INTO nhl_injury_reports_v19 (player_name,team,status,detail,checked_at_utc) VALUES (%s,%s,%s,%s,%s)', [(*r,now) for r in reports])
+                cur.execute('''INSERT INTO nhl_injury_sync_v19 (id,checked_at_utc,last_success_at,source,error,count)
+                 VALUES (1,%s,%s,%s,NULL,%s) ON CONFLICT(id) DO UPDATE SET
+                 checked_at_utc=EXCLUDED.checked_at_utc,last_success_at=EXCLUDED.last_success_at,
+                 source=EXCLUDED.source,error=NULL,count=EXCLUDED.count''',(now,now,URL,len(reports)))
+        print(f'ESPN: {len(reports)} blessures enregistrées')
+    except Exception as exc:
+        # Keep previous snapshot but mark attempted refresh as failed.
+        with psycopg.connect(db) as conn:
+            with conn.cursor() as cur:
+                cur.execute(SCHEMA)
+                cur.execute('''INSERT INTO nhl_injury_sync_v19(id,checked_at_utc,source,error,count)
+                 VALUES (1,%s,%s,%s,0) ON CONFLICT(id) DO UPDATE SET
+                 checked_at_utc=EXCLUDED.checked_at_utc,error=EXCLUDED.error''',(now,URL,str(exc)[:500]))
+        raise
+
+def load_injury_reports(max_age_hours=24):
+    """Return reports and freshness. Database outage means NOT VERIFIED."""
+    try:
+        with psycopg.connect(os.environ['SUPABASE_DB_URL'],connect_timeout=5) as conn:
+            with conn.cursor() as cur:
+                cur.execute('SELECT last_success_at,error,count FROM nhl_injury_sync_v19 WHERE id=1')
+                meta=cur.fetchone()
+                if not meta or not meta[0]:
+                    return {},False,'Aucune synchronisation ESPN réussie'
+                fresh=timedelta(0) <= datetime.now(timezone.utc)-meta[0] <= timedelta(hours=max_age_hours)
+                if not fresh:
+                    return {},False,'Données ESPN périmées'
+                cur.execute('SELECT player_name,team,status,detail FROM nhl_injury_reports_v19')
+                rows=cur.fetchall()
+                return {(_norm(n),_norm(t)):{'status':s,'detail':d} for n,t,s,d in rows},True,('ESPN synchronisé' if not meta[1] else 'Dernière tentative ESPN en échec ; snapshot récent conservé')
+    except Exception as exc:
+        return {},False,f'Statuts ESPN indisponibles : {type(exc).__name__}'
+
+def apply_injury_filter(picks, strict=False):
+    """Never label an unlisted player as confirmed. Strict requires manual confirmation."""
+    from availability_v17 import load_availability, player_status
+    reports,fresh,message=load_injury_reports()
+    manual=load_availability()
+    eligible=[];excluded=[];unknown=[]
+    for pick in picks:
+        name=pick.get('player_name') or pick.get('Joueur')
+        team=pick.get('team') or pick.get('Équipe')
+        injury=reports.get((_norm(name),_norm(team))) if fresh else None
+        manual_status=player_status(name,team,manual)
+        if injury or manual_status=='excluded':
+            excluded.append(pick)
+        elif manual_status=='confirmed':
+            eligible.append({**pick,'caveat':'Présence déclarée dans le CSV ; vérifier la composition officielle'})
+        else:
+            unknown.append(pick)
+            if fresh and not strict:
+                eligible.append({**pick,'caveat':'Non listé blessé par ESPN ; présence NON confirmée'})
+    return eligible,excluded,unknown,fresh,message
+
+if __name__=='__main__':
+    sync()
