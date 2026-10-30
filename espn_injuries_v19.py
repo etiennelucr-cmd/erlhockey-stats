@@ -30,42 +30,67 @@ SCHEMA = '''CREATE TABLE IF NOT EXISTS nhl_injury_reports_v19 (
  last_success_at TIMESTAMPTZ, source TEXT, error TEXT, count INTEGER NOT NULL DEFAULT 0);'''
 
 def parse_espn(html):
-    """Read ESPN team headings and adjacent injury tables; reject uncertain layouts."""
+    """Parse ESPN injury tables, including team labels outside h2/h3 headings.
+
+    A page with no recognizable team-linked injury rows is NEVER a valid snapshot.
+    """
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, 'html.parser')
     reports = []
     for table in soup.find_all('table'):
-        heading = table.find_previous(['h2','h3','h4'])
-        if heading is None:
+        headers = [_norm(c.get_text(' ', strip=True)) for c in table.select('thead th')]
+        if not headers:
+            first = table.find('tr')
+            headers = [_norm(c.get_text(' ', strip=True)) for c in first.find_all(['th','td'], recursive=False)] if first else []
+        if not any('status' in h for h in headers):
             continue
-        team_name = _norm(heading.get_text(' ', strip=True))
-        team = next((abbr for name,abbr in TEAM_ALIASES.items() if name in team_name), None)
+        # ESPN sometimes renders the team name in a div or link instead of a heading.
+        team = None
+        node = table
+        for _ in range(12):
+            node = node.find_previous(['h2','h3','h4','a','div','span'])
+            if node is None:
+                break
+            label = _norm(node.get_text(' ', strip=True))
+            if len(label) > 90:
+                continue
+            team = next((abbr for name,abbr in TEAM_ALIASES.items() if label == name or label.startswith(name + ' ')), None)
+            if team:
+                break
         if not team:
             continue
-        headers = [_norm(c.get_text(' ',strip=True)) for c in table.select('thead th')]
-        if not headers or not any('status' in h for h in headers):
-            continue
         for tr in table.select('tbody tr'):
-            cols = [c.get_text(' ',strip=True) for c in tr.find_all(['td','th'],recursive=False)]
-            if len(cols) != len(headers):
+            cells = tr.find_all(['td','th'], recursive=False)
+            if len(cells) != len(headers):
                 continue
-            row = dict(zip(headers,cols))
+            row = dict(zip(headers, [c.get_text(' ', strip=True) for c in cells]))
             name = row.get('name') or row.get('player') or ''
-            status = row.get('status','')
+            status = row.get('status') or ''
             if name and status:
                 reports.append((name,team,status,row.get('comment','') or row.get('details','')))
-    # Empty pages are not treated as a successful no-injury report.
     if not reports:
-        raise ValueError('Aucune table blessures ESPN reconnue (page bloquée ou format modifié).')
+        raise ValueError('Aucune ligne de blessure NHL exploitable dans la page ESPN (blocage ou format modifié).')
     return list({(_norm(n),t):(n,t,s,d) for n,t,s,d in reports}.values())
+
+
+def fetch_reports():
+    """Fetch ESPN and validate; do not claim an empty/blocked page is healthy."""
+    headers = {'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+               'Accept':'text/html,application/xhtml+xml', 'Accept-Language':'en-US,en;q=0.9'}
+    response = requests.get(URL, headers=headers, timeout=25)
+    response.raise_for_status()
+    html = response.text
+    if len(html) < 1000 or any(token in html.lower() for token in ('captcha-delivery.com','cf-chl-','access denied')):
+        raise ValueError('ESPN a renvoyé une page bloquée ou incomplète')
+    reports = parse_espn(html)
+    print(f'ESPN: {len(reports)} lignes valides extraites de la page HTML')
+    return reports
 
 def sync():
     db = os.environ['SUPABASE_DB_URL']
     now = datetime.now(timezone.utc)
     try:
-        resp = requests.get(URL, headers={'User-Agent':'Mozilla/5.0 (compatible; ErlHockey/1.0)','Accept-Language':'en-US,en;q=0.9'},timeout=25)
-        resp.raise_for_status()
-        reports = parse_espn(resp.text)
+        reports = fetch_reports()
         with psycopg.connect(db) as conn:
             with conn.cursor() as cur:
                 cur.execute(SCHEMA)
