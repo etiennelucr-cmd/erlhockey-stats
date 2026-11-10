@@ -27,18 +27,23 @@ h1,h2,h3{letter-spacing:-.02em}
 # Visual theme is loaded locally; no external assets or API keys required.
 st.markdown("<style>" + (Path(__file__).parent / "theme_v12.css").read_text(encoding="utf-8") + "</style>", unsafe_allow_html=True)
 
+@st.cache_data(ttl=900, show_spinner=False)
+def verified_roster_cached(team_codes):
+    from auto_picks_v21 import current_roster_ids
+    return current_roster_ids(set(team_codes))
+
 def render_v12_hero(page_name):
     labels = {
         "🏠 Tableau de bord": ("Tableau de bord V16", "Matchs du jour et demain · résultats des combinés suivis"),
-        "📈 Bilan des profils V20": ("Bilan des profils V20", "Statistiques cumulées des combinés et sélections par niveau de risque"),
+        "📈 Bilan des profils V21.6": ("Bilan des profils V21.6", "Combinés personnels et prédictions automatiques certifiées"),
         "🔥 Points 5/5": ("Points 5/5", "Joueurs en série qui jouent aujourd’hui ou demain"),
         "🧩 Combo Builder V14": ("Combo Builder V14", "Sélections personnalisables · matchs distincts · ce soir et demain"),
         "🏆 Sélections gagnantes": ("Sélections gagnantes V18", "Rejouer les marchés historiquement gagnants lors des prochains matchs"),
-        "🎯 NHL Picks": ("NHL Picks V20 · 5 profils", "Picks suivis, résultats et comparaison des cinq catégories"),
+        "🎯 NHL Picks": ("NHL Picks V21.7 · Mes sélections", "5 profils · horaires Paris · probabilités lisibles · choix personnels"),
     }
     title, subtitle = labels.get(page_name, (page_name.split(" ", 1)[-1], "Statistiques NHL • Données réelles et historiques"))
     now = datetime.now(PARIS).strftime("%d/%m/%Y %H:%M")
-    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V18</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V21.7</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
     st.markdown(f'<div class="eh-hero"><div class="eyebrow">🏒 ERLHOCKEY · NHL ANALYTICS</div><h2>{html.escape(title)}</h2><p>{html.escape(subtitle)}</p></div>', unsafe_allow_html=True)
 
 
@@ -330,7 +335,7 @@ def show_table(rows, columns=None):
 with st.sidebar:
     st.title("🏒 ErlHockey")
     st.caption("NHL • Stats V18")
-    page=st.radio("Navigation", ["🏠 Tableau de bord", "📈 Bilan des profils V20", "🔥 Points 5/5", "🧩 Combo Builder V14", "🏆 Sélections gagnantes", "📊 Mes combinés V14", "🎯 NHL Picks"], key="navigation_page")
+    page=st.radio("Navigation", ["🏠 Tableau de bord", "📈 Bilan des profils V21.6", "🔥 Points 5/5", "🧩 Combo Builder V14", "🏆 Sélections gagnantes", "📊 Mes combinés V14", "🎯 NHL Picks"], key="navigation_page")
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
         get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); perfect_five_streaks.clear(); recent_player_form.clear(); recent_team_form.clear(); db_query.clear(); st.rerun()
     st.caption("Données publiques NHL. Les statistiques peuvent être différées.")
@@ -365,7 +370,7 @@ try:
         else:
             st.info("Aucun match à venir aujourd'hui à analyser.")
         st.caption("En NHL, il n'y a pas de match nul au résultat final : une égalité après 60 minutes mène à la prolongation ou aux tirs au but. La mention « match serré » n'est pas un pronostic de nul réglementaire. Gardiens, blessures et compositions non pris en compte.")
-    elif page=="📈 Bilan des profils V20":
+    elif page=="📈 Bilan des profils V21.6":
         show_profile_stats_v20()
     elif page=="🧩 Combo Builder V14":
         show_combo_v12(db_query)
@@ -496,7 +501,7 @@ try:
     elif page=="🎯 NHL Picks":
         st.caption("Joueurs à surveiller pour obtenir au moins un point lors de leur prochain match NHL. Un seul pick par joueur.")
         st.info("Top 10 automatique fondé sur les cinq derniers matchs et la forme des deux plus récents. Ce score n'est pas une probabilité de réussite ni un conseil de pari.")
-        upcoming = upcoming_games(2)
+        upcoming = upcoming_games(3)  # inclure la date NHL suivante pour les matchs après minuit à Paris
         if not upcoming:
             st.info("Aucun match programmé aujourd'hui ou demain dans les données NHL.")
         else:
@@ -516,7 +521,19 @@ try:
             if not upcoming:
                 st.info("Aucun match futur dans la période analysée.")
             else:
-                # V16 : classement automatique sans filtres manuels.
+                # Les effectifs NHL actuels priment sur les anciennes équipes en base.
+                # Une absence de vérification bloque les suggestions plutôt que de créer des faux picks.
+                teams = {g.get(side, {}).get('abbrev') for g in upcoming for side in ('homeTeam', 'awayTeam')}
+                teams.discard(None)
+                try:
+                    verified_rosters = verified_roster_cached(tuple(sorted(teams)))
+                    roster_owner = {str(pid): team for team, members in verified_rosters.items() for pid in members}
+                    if len(roster_owner) != sum(len(v) for v in verified_rosters.values()):
+                        raise ValueError('Identifiant joueur present dans plusieurs effectifs')
+                    st.caption(f'Effectifs NHL officiels : {len(verified_rosters)} équipes vérifiées.')
+                except Exception as exc:
+                    roster_owner = {}
+                    st.error(f'Effectifs NHL indisponibles : suggestions suspendues ({type(exc).__name__}).')
                 selected_games = upcoming
                 min_regular = 0
                 form = recent_player_form()
@@ -526,7 +543,10 @@ try:
                 for g in selected_games:
                     away = g.get('awayTeam', {}).get('abbrev', '?')
                     home = g.get('homeTeam', {}).get('abbrev', '?')
-                    for _, p in form[form['equipe'].isin((away, home))].iterrows():
+                    for _, p in form.iterrows():
+                        current_team = roster_owner.get(str(p['player_id']))
+                        if current_team not in (away, home):
+                            continue
                         played = int(p['matchs_avec_point'])
                         if played < min_regular:
                             continue
@@ -544,8 +564,8 @@ try:
                                   else 'À surveiller')
                         rows.append({
                             'game_id': g.get('id'), 'kickoff': datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00')), 'Heure (Paris)': game_time(g), 'Match': f'{away} @ {home}',
-                            'Joueur': p['joueur'], 'player_id': p['player_id'], 'Équipe': p['equipe'],
-                            'Adversaire': home if p['equipe'] == away else away,
+                            'Joueur': p['joueur'], 'player_id': p['player_id'], 'Équipe': current_team,
+                            'Adversaire': home if current_team == away else away,
                             'Signal': signal, 'Score indicatif': score,
                             'Matchs avec point / 5': played, 'Points / 5': points,
                             'Points / 2 derniers': recent_points,
