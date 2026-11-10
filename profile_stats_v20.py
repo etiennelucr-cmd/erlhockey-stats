@@ -1,5 +1,6 @@
 """V21.9 unified profile analytics: tracked combinations and certified auto picks."""
 import pandas as pd
+from ui_format_v22 import audit_view
 
 PROFILES = ['Prudent', 'Modéré', 'Équilibré', 'Risqué', 'Ultra risqué']
 
@@ -112,9 +113,9 @@ def show():
         st.caption('Uniquement les combinés intégralement réglés : 2/3 = deux sélections gagnées sur trois.')
         st.dataframe(summary[['Profil','À une sélection près','Presque gagnés / perdus (%)',
                     'Détail presque gagnés']],hide_index=True,use_container_width=True)
-        st.bar_chart(summary.set_index('Profil')[['À une sélection près']])
+        st.bar_chart(summary.set_index('Profil')[['À une sélection près']],horizontal=True)
         st.subheader('Sélections gagnées et perdues')
-        st.bar_chart(summary.set_index('Profil')[['Sélections gagnées','Sélections perdues']])
+        st.bar_chart(summary.set_index('Profil')[['Sélections gagnées','Sélections perdues']],horizontal=True)
     with t2:
         a,b,c,d = st.columns(4)
         a.metric('Picks certifiés',len(certified))
@@ -135,12 +136,10 @@ def show():
             else:
                 profile = st.selectbox('Profil',PROFILES,key='v216_auto_profile')
                 subset = auto[auto['profile']==profile].sort_values('kickoff',ascending=False)
-                subset=subset.copy()
-                subset['probability']=pd.to_numeric(subset['probability'],errors='coerce')*100
-                for dt_col in ('kickoff','created_at'):
-                    subset[dt_col]=pd.to_datetime(subset[dt_col],utc=True,errors='coerce').dt.tz_convert('Europe/Paris').dt.strftime('%d/%m/%Y · %Hh%M')
-                subset=subset.rename(columns={'profile':'Profil','selection':'Sélection','probability':'Estimation (%)','status':'Statut','kickoff':'Match (Paris)','created_at':'Créé (Paris)','validation_state':'Validation','validation_version':'Version','validation_note':'Note'})
-                st.dataframe(subset,hide_index=True,width='stretch',column_config={'Estimation (%)':st.column_config.ProgressColumn('Estimation (%)',min_value=0,max_value=100,format='%.1f %%')})
+                st.dataframe(audit_view(subset),hide_index=True,width='stretch',
+                    column_config={'Estimation (%)':st.column_config.ProgressColumn('Estimation (%)',min_value=0,max_value=100,format='%.1f %%')})
+                with st.expander('Détails techniques · validation et audit'):
+                    st.dataframe(audit_view(subset,technical=True),hide_index=True,width='stretch')
     with t3:
         st.subheader('Comparaison des cinq profils')
         comparison = summary[['Profil','Réussite combinés (%)','Réussite sélections (%)']].merge(

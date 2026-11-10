@@ -53,3 +53,19 @@ h1{font-weight:800!important}h2{font-size:1.5rem!important}h3{font-size:1.18rem!
 .eh-pick-prob{font-size:1.9rem;line-height:1.2;color:#f5fbff;font-weight:850;letter-spacing:-.04em;font-variant-numeric:tabular-nums}
 [data-testid='stProgress']>div{height:10px!important;border-radius:100px!important}
 @media(max-width:760px){.eh-hero{padding:22px!important;min-height:135px}.eh-hero:after{font-size:65px;right:2%;top:15px}.eh-pick-prob{font-size:1.45rem}}
+
+/* V22.0 visual polish, without altering prediction or database logic */
+.eh-hero{border-radius:20px!important;min-height:178px;box-shadow:0 18px 45px rgba(0,0,0,.25)!important;background:radial-gradient(ellipse at 85% 85%,rgba(35,160,250,.3),transparent 39%),linear-gradient(115deg,#07192e 0%,#123b62 58%,#0a1d34 100%)!important}
+.eh-hero:after{content:'🏒';font-size:104px;right:5%;top:14px;opacity:.24}
+.eh-hero .eyebrow{color:#76d5ff!important}
+.eh-topline{border-bottom:1px solid #204663;padding-bottom:12px;margin-bottom:16px}
+.eh-pick-match{justify-content:space-between;gap:12px;margin-bottom:16px!important}
+.eh-pick-match .eh-match-title{background:transparent;border:0;padding:0;color:#f4faff;font-size:1.06rem;font-weight:800}
+.eh-pick-match .eh-match-time{background:#123956!important;border:1px solid #2e84b8!important;color:#d6efff!important;font-size:.94rem!important;font-weight:750!important;padding:7px 12px!important}
+.eh-pick-prob{font-size:2.25rem!important;color:#8bdbff!important;text-align:right}
+.eh-pick-prob-caption{color:#aac9e0;font-size:.75rem;text-align:right;margin:3px 0 8px}
+[data-testid='stMetric']{transition:transform .15s ease,border-color .15s ease}
+[data-testid='stMetric']:hover{transform:translateY(-2px);border-color:#3393cb!important}
+[data-testid='stTabs'] button[role='tab']{font-weight:700!important}
+[data-testid='stDataFrame']{border-radius:14px!important}
+@media(max-width:760px){.eh-pick-match{display:block}.eh-pick-match .eh-match-time{display:inline-block;margin-top:8px}.eh-pick-prob{text-align:left;font-size:1.7rem!important}.eh-pick-prob-caption{text-align:left}}

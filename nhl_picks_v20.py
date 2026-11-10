@@ -6,6 +6,7 @@ import html
 import pandas as pd
 import streamlit as st
 from tracker_v14 import follow, connect
+from ui_format_v22 import STATUSES
 
 PROFILES = ('Prudent', 'Modéré', 'Équilibré', 'Risqué', 'Ultra risqué')
 MARKETS = (('1+ point', 'points', 1), ('2+ points', 'points', 2), ('1+ but', 'goals', 1))
@@ -174,14 +175,14 @@ def show(rows, db_query):
                 with st.container(border=True):
                     c1, c2 = st.columns([5, 2], vertical_alignment='center')
                     with c1:
-                        st.markdown(f"<div class='eh-pick-match'>🏒 {html.escape(str(p['match']))} <span>🕒 {html.escape(paris_time_label(p['time']))} · Paris</span></div>", unsafe_allow_html=True)
+                        st.markdown(f"<div class='eh-pick-match'><span class='eh-match-title'>🏒 {html.escape(str(p['match']))}</span><span class='eh-match-time'>🕒 {html.escape(paris_time_label(p['time']))} · Paris</span></div>", unsafe_allow_html=True)
                         st.checkbox(p['selection'], key=selected_keys[i])
                         if p['fallback']:
                             st.caption('⚠️ Hors plage de probabilité habituelle du profil')
                         if p['player_reused']:
                             st.caption('↗️ Joueur également proposé dans un autre profil')
                     with c2:
-                        st.markdown(f"<div class='eh-pick-prob'>{pct_label(p['probability'])}</div>",unsafe_allow_html=True)
+                        st.markdown(f"<div class='eh-pick-prob'>{pct_label(p['probability'])}</div><div class='eh-pick-prob-caption'>Estimation du modèle · non calibrée</div>",unsafe_allow_html=True)
                         st.progress(float(p['probability']))
                         st.caption(f"Estimation du modèle · Historique : {p['hits']} réussites sur {p['sample']} matchs ({100*p['hits']/p['sample']:.0f} % observés)" if p['sample'] else 'Estimation du modèle · historique insuffisant')
             chosen = [p for p, key in zip(picks, selected_keys)
@@ -215,6 +216,7 @@ def show(rows, db_query):
             display['probability'] = display['probability'].map(lambda v: pct_label(float(v)) if pd.notna(v) else '—')
             for column in ('kickoff', 'created_at'):
                 display[column] = pd.to_datetime(display[column], utc=True, errors='coerce').dt.tz_convert(PARIS).dt.strftime('%d/%m/%Y · %Hh%M')
+            display['status'] = display['status'].map(STATUSES).fillna(display['status'])
             display = display.rename(columns={'created_at':'Créé (Paris)','selection':'Sélection','probability':'Estimation','status':'Statut','kickoff':'Match (Paris)'})
             st.dataframe(display, hide_index=True,width='stretch')
         else:

@@ -3,10 +3,11 @@ import pandas as pd
 import streamlit as st
 from nhl_picks_v20 import PROFILES
 from tracker_v14 import connect
+from ui_format_v22 import audit_view
 
 
 def show():
-    st.subheader('🤖 V21 · Prédictions automatiques vs mes choix')
+    st.subheader('🤖 Prédictions automatiques · Bilan et suivi')
     st.caption('Les prédictions automatiques sont figées avant le match, même si tu ne les coches pas. '
                'Les choix personnels sont comptés séparément. Les taux excluent les matchs en attente et les annulations.')
     try:
@@ -30,10 +31,10 @@ def show():
                 df['created_at'] = pd.to_datetime(df['created_at'],utc=True)
                 df.drop(df[df.created_at < cutoff].index,inplace=True)
     if not auto.empty:
-        legacy_count = int((auto.validation_state != 'roster_verified').sum())
+        legacy_count = int((~(auto.validation_state.eq('roster_verified') & auto.validation_version.notna())).sum())
         if legacy_count:
             st.warning(f'{legacy_count} ancien(s) pick(s) non certifie(s) conserves pour audit et exclus du taux automatique certifie.')
-        auto_certified = auto[auto.validation_state == 'roster_verified'].copy()
+        auto_certified = auto[auto.validation_state.eq('roster_verified') & auto.validation_version.notna()].copy()
     else:
         auto_certified = auto
     result=[]
@@ -52,5 +53,9 @@ def show():
     if not auto.empty:
         st.subheader('Historique des prédictions automatiques')
         profile=st.selectbox('Profil automatique',PROFILES,key='v21_auto_profile')
-        st.dataframe(auto[auto.profile==profile].sort_values('kickoff',ascending=False),hide_index=True,use_container_width=True)
+        subset = auto[auto.profile==profile].sort_values('kickoff',ascending=True)
+        st.dataframe(audit_view(subset),hide_index=True,width='stretch',
+                     column_config={'Estimation (%)':st.column_config.ProgressColumn('Estimation (%)',min_value=0,max_value=100,format='%.1f %%')})
+        with st.expander('🔎 Détails techniques de certification'):
+            st.dataframe(audit_view(subset,technical=True),hide_index=True,width='stretch')
         st.caption('Les anciennes lignes non certifiees sont visibles ici pour audit, mais exclues des taux automatiques certifies.')
