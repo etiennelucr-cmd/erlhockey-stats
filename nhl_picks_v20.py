@@ -154,6 +154,7 @@ def show(rows, db_query):
     st.caption('Le taux est calculé uniquement sur les picks suivis et réglés. '
                'Une sélection non suivie n’entre pas dans les résultats. Sans cotes et mises, aucun ROI ne peut être calculé.')
     st.subheader(f'🎯 Choisir mes picks · {period}')
+    st.caption('🕒 Heure française exacte · estimation du modèle distincte des réussites historiques · coche puis confirme tes choix.')
     st.caption('Coche uniquement les picks que tu as choisis, ou utilise « All » pour sélectionner tous les picks proposés du profil. Le suivi est enregistré seulement après confirmation.')
     for name in PROFILES:
         picks = candidates[name]
@@ -173,16 +174,16 @@ def show(rows, db_query):
                 with st.container(border=True):
                     c1, c2 = st.columns([5, 2], vertical_alignment='center')
                     with c1:
-                        st.caption(f"🏒 {p['match']}  ·  🕒 {paris_time_label(p['time'])} (Paris)")
+                        st.markdown(f"<div class='eh-pick-match'>🏒 {html.escape(str(p['match']))} <span>🕒 {html.escape(paris_time_label(p['time']))} · Paris</span></div>", unsafe_allow_html=True)
                         st.checkbox(p['selection'], key=selected_keys[i])
                         if p['fallback']:
                             st.caption('⚠️ Hors plage de probabilité habituelle du profil')
                         if p['player_reused']:
                             st.caption('↗️ Joueur également proposé dans un autre profil')
                     with c2:
-                        st.markdown(f"**{pct_label(p['probability'])}**")
+                        st.markdown(f"<div class='eh-pick-prob'>{pct_label(p['probability'])}</div>",unsafe_allow_html=True)
                         st.progress(float(p['probability']))
-                        st.caption(f"Estimation · {p['hits']}/{p['sample']} matchs")
+                        st.caption(f"Estimation du modèle · Historique : {p['hits']} réussites sur {p['sample']} matchs ({100*p['hits']/p['sample']:.0f} % observés)" if p['sample'] else 'Estimation du modèle · historique insuffisant')
             chosen = [p for p, key in zip(picks, selected_keys)
                       if st.session_state.get(key, False)]
             st.caption(f'{len(chosen)} pick(s) sélectionné(s) sur {len(picks)}')

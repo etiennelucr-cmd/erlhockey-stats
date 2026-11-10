@@ -49,15 +49,15 @@ def verified_roster_cached(team_code):
 def render_v12_hero(page_name):
     labels = {
         "🏠 Tableau de bord": ("Tableau de bord V16", "Matchs du jour et demain · résultats des combinés suivis"),
-        "📈 Bilan des profils V21.6": ("Bilan des profils V21.6", "Combinés personnels et prédictions automatiques certifiées"),
+        "📈 Bilan des profils V21.9": ("Bilan des profils V21.9", "Combinés personnels et prédictions automatiques certifiées"),
         "🔥 Points 5/5": ("Points 5/5", "Joueurs en série qui jouent aujourd’hui ou demain"),
         "🧩 Combo Builder V14": ("Combo Builder V14", "Sélections personnalisables · matchs distincts · ce soir et demain"),
         "🏆 Sélections gagnantes": ("Sélections gagnantes V18", "Rejouer les marchés historiquement gagnants lors des prochains matchs"),
-        "🎯 NHL Picks": ("NHL Picks V21.7 · Mes sélections", "5 profils · horaires Paris · probabilités lisibles · choix personnels"),
+        "🎯 NHL Picks": ("NHL Picks V21.9 · Mes sélections", "5 profils · horaires Paris · probabilités lisibles · choix personnels"),
     }
     title, subtitle = labels.get(page_name, (page_name.split(" ", 1)[-1], "Statistiques NHL • Données réelles et historiques"))
     now = datetime.now(PARIS).strftime("%d/%m/%Y %H:%M")
-    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V21.7</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
+    st.markdown(f'<div class="eh-topline"><span>🏒 <b>ErlHockey</b> · Stats & Betting NHL · V21.9</span><span>🕒 {now} (Paris) &nbsp; <span class="eh-online">● Interface active</span></span></div>', unsafe_allow_html=True)
     st.markdown(f'<div class="eh-hero"><div class="eyebrow">🏒 ERLHOCKEY · NHL ANALYTICS</div><h2>{html.escape(title)}</h2><p>{html.escape(subtitle)}</p></div>', unsafe_allow_html=True)
 
 
@@ -349,7 +349,7 @@ def show_table(rows, columns=None):
 with st.sidebar:
     st.title("🏒 ErlHockey")
     st.caption("NHL • Stats V18")
-    page=st.radio("Navigation", ["🏠 Tableau de bord", "📈 Bilan des profils V21.6", "🔥 Points 5/5", "🧩 Combo Builder V14", "🏆 Sélections gagnantes", "📊 Mes combinés V14", "🎯 NHL Picks"], key="navigation_page")
+    page=st.radio("Navigation", ["🏠 Tableau de bord", "📈 Bilan des profils V21.9", "🔥 Points 5/5", "🧩 Combo Builder V14", "🏆 Sélections gagnantes", "📊 Mes combinés V14", "🎯 NHL Picks"], key="navigation_page")
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
         get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); perfect_five_streaks.clear(); recent_player_form.clear(); recent_team_form.clear(); db_query.clear(); st.rerun()
     st.caption("Données publiques NHL. Les statistiques peuvent être différées.")
@@ -384,7 +384,7 @@ try:
         else:
             st.info("Aucun match à venir aujourd'hui à analyser.")
         st.caption("En NHL, il n'y a pas de match nul au résultat final : une égalité après 60 minutes mène à la prolongation ou aux tirs au but. La mention « match serré » n'est pas un pronostic de nul réglementaire. Gardiens, blessures et compositions non pris en compte.")
-    elif page=="📈 Bilan des profils V21.6":
+    elif page=="📈 Bilan des profils V21.9":
         show_profile_stats_v20()
     elif page=="🧩 Combo Builder V14":
         show_combo_v12(db_query)
