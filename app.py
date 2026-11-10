@@ -28,9 +28,23 @@ h1,h2,h3{letter-spacing:-.02em}
 st.markdown("<style>" + (Path(__file__).parent / "theme_v12.css").read_text(encoding="utf-8") + "</style>", unsafe_allow_html=True)
 
 @st.cache_data(ttl=900, show_spinner=False)
-def verified_roster_cached(team_codes):
+def verified_roster_cached(team_code):
+    """Verify each team separately so one NHL API outage does not block all games."""
     from auto_picks_v21 import current_roster_ids
-    return current_roster_ids(set(team_codes))
+    import requests
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+
+    session = requests.Session()
+    retry = Retry(total=2, connect=2, read=2, backoff_factor=0.6,
+                  status_forcelist=(429, 500, 502, 503, 504),
+                  allowed_methods=frozenset(('GET',)))
+    session.mount('https://', HTTPAdapter(max_retries=retry))
+    try:
+        return current_roster_ids({team_code}, session=session)[team_code]
+    finally:
+        session.close()
+
 
 def render_v12_hero(page_name):
     labels = {
@@ -525,15 +539,24 @@ try:
                 # Une absence de vérification bloque les suggestions plutôt que de créer des faux picks.
                 teams = {g.get(side, {}).get('abbrev') for g in upcoming for side in ('homeTeam', 'awayTeam')}
                 teams.discard(None)
-                try:
-                    verified_rosters = verified_roster_cached(tuple(sorted(teams)))
-                    roster_owner = {str(pid): team for team, members in verified_rosters.items() for pid in members}
-                    if len(roster_owner) != sum(len(v) for v in verified_rosters.values()):
-                        raise ValueError('Identifiant joueur present dans plusieurs effectifs')
-                    st.caption(f'Effectifs NHL officiels : {len(verified_rosters)} équipes vérifiées.')
-                except Exception as exc:
+                verified_rosters = {}
+                roster_errors = {}
+                for team in sorted(teams):
+                    try:
+                        verified_rosters[team] = verified_roster_cached(team)
+                    except Exception as exc:
+                        roster_errors[team] = type(exc).__name__
+                roster_owner = {str(pid): team for team, members in verified_rosters.items() for pid in members}
+                if len(roster_owner) != sum(len(v) for v in verified_rosters.values()):
+                    st.error('Incohérence des effectifs NHL : suggestions suspendues pour sécurité.')
                     roster_owner = {}
-                    st.error(f'Effectifs NHL indisponibles : suggestions suspendues ({type(exc).__name__}).')
+                st.caption(f'Effectifs NHL officiels vérifiés : {len(verified_rosters)}/{len(teams)} équipes.')
+                if roster_errors:
+                    details = ', '.join(f'{team} ({reason})' for team, reason in sorted(roster_errors.items()))
+                    st.warning('Certaines équipes sont temporairement indisponibles : '
+                               f'{details}. Aucun joueur non vérifié ne sera proposé.')
+                if not verified_rosters:
+                    st.error('Aucun effectif NHL vérifiable actuellement. Réessaie plus tard.')
                 selected_games = upcoming
                 min_regular = 0
                 form = recent_player_form()

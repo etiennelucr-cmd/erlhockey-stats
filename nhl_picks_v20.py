@@ -134,7 +134,7 @@ def show(rows, db_query):
         candidates = candidate_picks(rows, history)
     else:
         candidates = {name:[] for name in PROFILES}
-        st.info('Aucune rencontre future éligible dans la période analysée.')
+        st.info('Aucune rencontre future éligible pour cette soirée. Essaie « Mixte » ou « Demain ». Si des effectifs NHL sont indisponibles, seuls les joueurs vérifiés peuvent apparaître.')
     try:
         past = history_summary()
     except Exception:
@@ -150,7 +150,7 @@ def show(rows, db_query):
                         'Proposés':len(candidates[name])})
     st.subheader('Bilan des picks suivis')
     st.caption('Un pick par match et par profil, si au moins un joueur possède assez de données. Les profils peuvent proposer des joueurs différents du même match.')
-    st.dataframe(pd.DataFrame(summary),hide_index=True,use_container_width=True)
+    st.dataframe(pd.DataFrame(summary),hide_index=True,width='stretch')
     st.caption('Le taux est calculé uniquement sur les picks suivis et réglés. '
                'Une sélection non suivie n’entre pas dans les résultats. Sans cotes et mises, aucun ROI ne peut être calculé.')
     st.subheader(f'🎯 Choisir mes picks · {period}')
@@ -215,6 +215,6 @@ def show(rows, db_query):
             for column in ('kickoff', 'created_at'):
                 display[column] = pd.to_datetime(display[column], utc=True, errors='coerce').dt.tz_convert(PARIS).dt.strftime('%d/%m/%Y · %Hh%M')
             display = display.rename(columns={'created_at':'Créé (Paris)','selection':'Sélection','probability':'Estimation','status':'Statut','kickoff':'Match (Paris)'})
-            st.dataframe(display, hide_index=True,use_container_width=True)
+            st.dataframe(display, hide_index=True,width='stretch')
         else:
             st.info('Pas encore de pick suivi pour ce profil.')
