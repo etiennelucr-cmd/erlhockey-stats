@@ -115,16 +115,30 @@ def generate(conn, now=None, fetch=None, roster_fetch=None):
 
 
 def settle(conn):
-    from settle_v14 import evaluate
-    rows = conn.execute('''SELECT a.id,a.game_id,a.selection,g.home_team,g.away_team,g.home_score,g.away_score
+    """Settle by official player ID rather than display name."""
+    rows = conn.execute("""SELECT a.id,a.game_id,a.player_id,a.market,
+        g.home_score,g.away_score
         FROM v21_auto_picks a JOIN nhl_games g ON g.game_id=a.game_id
-        WHERE a.status='pending' AND g.game_state IN ('OFF','FINAL')''').fetchall()
-    for pid,gid,selection,home,away,hs,as_ in rows:
-        players = conn.execute('SELECT player_name,goals,points FROM nhl_player_games WHERE game_id=%s',(gid,)).fetchall()
-        outcome = evaluate(selection,(home,away,hs,as_),players)
-        if outcome:
-            conn.execute('UPDATE v21_auto_picks SET status=%s WHERE id=%s AND status=\'pending\'',(outcome,pid))
-    return len(rows)
+        WHERE a.status='pending' AND g.game_state IN ('OFF','FINAL')""").fetchall()
+    settled = 0
+    for pick_id, gid, player_id, market, home_score, away_score in rows:
+        if home_score is None or away_score is None:
+            continue
+        stats = conn.execute("""SELECT goals,points FROM nhl_player_games
+            WHERE game_id=%s AND player_id::text=%s""", (gid, str(player_id))).fetchall()
+        if len(stats) != 1 or stats[0][0] is None or stats[0][1] is None:
+            outcome = 'void'
+        elif market == '1+ but':
+            outcome = 'won' if stats[0][0] >= 1 else 'lost'
+        elif market == '1+ point':
+            outcome = 'won' if stats[0][1] >= 1 else 'lost'
+        elif market == '2+ points':
+            outcome = 'won' if stats[0][1] >= 2 else 'lost'
+        else:
+            outcome = 'void'
+        conn.execute("UPDATE v21_auto_picks SET status=%s WHERE id=%s AND status='pending'", (outcome, pick_id))
+        settled += 1
+    return settled
 
 
 def main():
