@@ -1,17 +1,30 @@
--- Run once in Supabase SQL editor. Automatic predictions are separate from user picks.
-CREATE TABLE IF NOT EXISTS v21_auto_picks (
-    id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    profile text NOT NULL CHECK (profile IN ('Prudent','Modéré','Équilibré','Risqué','Ultra risqué')),
-    game_id bigint NOT NULL,
-    player_id text NOT NULL,
-    match_label text NOT NULL,
-    selection text NOT NULL,
-    market text NOT NULL,
-    probability double precision NOT NULL CHECK (probability >= 0 AND probability <= 1),
-    kickoff timestamptz NOT NULL,
-    created_at timestamptz NOT NULL DEFAULT now(),
-    status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','won','lost','void')),
-    UNIQUE(profile,game_id),
-    CHECK (created_at < kickoff)
-);
-CREATE INDEX IF NOT EXISTS v21_auto_picks_created_idx ON v21_auto_picks(created_at DESC);
+
+name: V21 Predictions automatiques
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/30 * * * *"
+
+jobs:
+  auto-picks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Recuperer le depot
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Installer les dependances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generer et verifier les picks V21
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: python auto_picks_v21.py
