@@ -138,29 +138,4 @@ def dashboard_summary():
     leg_won=int(legs.get('won',0)); leg_lost=int(legs.get('lost',0))
     e.metric('Ratio sélections',f'{leg_won/(leg_won+leg_lost):.1%}' if leg_won+leg_lost else '—',help='Gagnées / (gagnées + perdues), hors pending et void.')
     st.caption(f'Réussite combinés : {won/(won+lost):.1%}' if won+lost else 'Réussite combinés : — (aucun combiné terminé)')
-    try:
-        with connect() as conn:
-            origins=pd.read_sql_query("""SELECT CASE WHEN c.profile LIKE 'Sélections gagnantes%' THEN 'Sélections gagnantes' ELSE 'Combo Builder' END AS origine,
-                COUNT(DISTINCT c.id) AS combos_suivis,
-                COUNT(DISTINCT c.id) FILTER (WHERE c.status='won') AS combos_gagnes,
-                COUNT(DISTINCT c.id) FILTER (WHERE c.status='lost') AS combos_perdus,
-                COUNT(l.id) FILTER (WHERE l.status='won') AS selections_gagnees,
-                COUNT(l.id) FILTER (WHERE l.status='lost') AS selections_perdues
-                FROM tracked_combos c LEFT JOIN tracked_legs l ON l.combo_id=c.id GROUP BY 1 ORDER BY 1""",conn)
-        if not origins.empty:
-            origins['Ratio sélections']=origins.apply(lambda r: f"{r.selections_gagnees/(r.selections_gagnees+r.selections_perdues):.1%}" if r.selections_gagnees+r.selections_perdues else '—',axis=1)
-            st.markdown('**Bilan par générateur**')
-            st.dataframe(origins.rename(columns={'origine':'Origine','combos_suivis':'Combinés suivis','combos_gagnes':'Combinés gagnés','combos_perdus':'Combinés perdus','selections_gagnees':'Sélections gagnées','selections_perdues':'Sélections perdues'}),hide_index=True,use_container_width=True)
-    except Exception:
-        st.caption('Détail par générateur temporairement indisponible.')
-    if recent:
-        st.markdown('**Derniers combinés suivis**')
-        rows=[]
-        for profile,created,status,total,leg_won,leg_lost,unresolved in recent:
-            rows.append({'Origine':origin_label(profile),'Profil':profile,'Date (Paris)':created.astimezone(PARIS).strftime('%d/%m %H:%M'),
-                         'Résultat':{'won':'✅ Gagné','lost':'❌ Perdu','pending':'⏳ En attente','void':'↩️ Annulé'}.get(status,status),
-                         'Sélections gagnées':f'{leg_won}/{total}', 'Sélections perdues':int(leg_lost),
-                         'En attente / annulées':int(unresolved)})
-        st.dataframe(pd.DataFrame(rows),hide_index=True,use_container_width=True)
-    else:
-        st.info('Aucun combiné suivi pour le moment.')
+

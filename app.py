@@ -349,7 +349,7 @@ def show_table(rows, columns=None):
 with st.sidebar:
     st.title("🏒 ErlHockey")
     st.caption("NHL • ErlHockey V22.0")
-    page=st.radio("Navigation", ["🏠 Tableau de bord", "📈 Bilan des profils V22.0", "🔥 Points 5/5", "🧩 Combo Builder V14", "🏆 Sélections gagnantes", "📊 Mes combinés V14", "🎯 NHL Picks"], key="navigation_page")
+    page=st.radio("Navigation", ["🏠 Tableau de bord", "📈 Bilan des profils V22.0", "🔥 Points 5/5", "🧩 Combo Builder V14", "🏆 Sélections gagnantes", "📊 Mes combinés V14", "🏆 Récap des soirées NHL", "🎯 NHL Picks"], key="navigation_page")
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
         get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); perfect_five_streaks.clear(); recent_player_form.clear(); recent_team_form.clear(); db_query.clear(); st.rerun()
     st.caption("Données publiques NHL. Les statistiques peuvent être différées.")
@@ -384,6 +384,9 @@ try:
         else:
             st.info("Aucun match à venir aujourd'hui à analyser.")
         st.caption("En NHL, il n'y a pas de match nul au résultat final : une égalité après 60 minutes mène à la prolongation ou aux tirs au but. La mention « match serré » n'est pas un pronostic de nul réglementaire. Gardiens, blessures et compositions non pris en compte.")
+    elif page=="🏆 Récap des soirées NHL":
+        from nightly_recap_v223 import show as show_nightly_recap
+        show_nightly_recap()
     elif page=="📈 Bilan des profils V22.0":
         show_profile_stats_v20()
     elif page=="🧩 Combo Builder V14":
