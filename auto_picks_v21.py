@@ -7,11 +7,13 @@ import pandas as pd
 import psycopg
 import requests
 from nhl_picks_v20 import candidate_picks, PROFILES
+from espn_injuries_v19 import _matching_injury
+from availability_v17 import _norm
 
 PARIS = ZoneInfo('Europe/Paris')
 PREFIX = 'Auto V21 | '
-VERSION = 'V21.4'
-log = logging.getLogger('erlhockey.v214')
+VERSION = 'V21.5'
+log = logging.getLogger('erlhockey.v215')
 
 
 def current_roster_ids(teams, session=None, roster_fetch=None):
@@ -37,6 +39,39 @@ def current_roster_ids(teams, session=None, roster_fetch=None):
         verified[team] = ids
     return verified
 
+
+
+def injury_snapshot(conn, now, max_age_hours=24):
+    """Use the existing ESPN collector snapshot; fail closed on stale/missing data.
+
+    Do not silently treat an empty/failed injury feed as all players healthy.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute('SELECT last_success_at, count FROM nhl_injury_sync_v19 WHERE id=1')
+            meta = cur.fetchone()
+            if not meta or not meta[0] or not meta[1] or meta[1] <= 0:
+                raise RuntimeError('Aucune synchronisation ESPN valide')
+            age = now - meta[0]
+            if not timedelta(0) <= age <= timedelta(hours=max_age_hours):
+                raise RuntimeError(f'Snapshot ESPN perime: {age}')
+            cur.execute('SELECT player_name,team,status,detail FROM nhl_injury_reports_v19')
+            entries = cur.fetchall()
+        if not entries:
+            raise RuntimeError('Table blessures ESPN vide')
+        reports = {(_norm(name), _norm(team)): {'status': status, 'detail': detail}
+                   for name, team, status, detail in entries}
+        log.info('ESPN blessures: %d entrees, age %.1f h', len(reports), age.total_seconds()/3600)
+        return reports
+    except (psycopg.Error, RuntimeError) as exc:
+        raise RuntimeError('Generation suspendue : blessures ESPN non verifiables. '
+                           'Executer le workflow blessures-espn-v19 puis relancer V21.5. '
+                           f'Detail: {exc}') from exc
+
+
+def injury_eligible(name, team, reports):
+    """Conservative: any ESPN injury listing excludes candidate; no listing != confirmed."""
+    return _matching_injury(name, team, reports) is None
 
 
 def upcoming_games(now, fetch):
@@ -76,6 +111,7 @@ def generate(conn, now=None, fetch=None, roster_fetch=None):
     # Stop rather than publish false picks if official rosters cannot be fetched.
     verified_rosters = current_roster_ids(teams, roster_fetch=roster_fetch)
     log.info('Equipes NHL verifiees : %d ; joueurs dans les effectifs : %d', len(verified_rosters), sum(map(len, verified_rosters.values())))
+    injuries = injury_snapshot(conn, now)
     # Only finalized historical rows strictly before generation time: no look-ahead.
     # Current NHL roster is the source of truth; historic team can be stale after a transfer.
     roster_owner = {pid: team for team, members in verified_rosters.items() for pid in members}
@@ -93,6 +129,7 @@ def generate(conn, now=None, fetch=None, roster_fetch=None):
     rows = []
     rejected = 0
     moved = 0
+    injured = 0
     for gid, (g, kickoff) in games.items():
         away = g.get('awayTeam',{}).get('abbrev')
         home = g.get('homeTeam',{}).get('abbrev')
@@ -101,11 +138,14 @@ def generate(conn, now=None, fetch=None, roster_fetch=None):
             if current_team not in (away, home):
                 rejected += 1
                 continue
+            if not injury_eligible(p.player_name, current_team, injuries):
+                injured += 1
+                continue
             if p.team != current_team:
                 moved += 1
             rows.append({'game_id':gid,'kickoff':kickoff,'Match':f'{away} @ {home}',
                          'Joueur':p.player_name,'player_id':p.player_id,'Équipe':current_team})
-    log.info('Candidatures joueurs-match valides : %d ; exclues mauvaise equipe/effectif : %d ; historiques avec equipe perimee corriges : %d', len(rows), rejected, moved)
+    log.info('Candidatures valides : %d ; mauvaise equipe/effectif : %d ; blessure ESPN : %d ; transferts historiques corriges : %d', len(rows), rejected, injured, moved)
     if not rows:
         log.warning('Aucun joueur-match confirme dans les effectifs officiels')
         return 0
@@ -128,11 +168,14 @@ def generate(conn, now=None, fetch=None, roster_fetch=None):
             valid_teams = {fixture.get('homeTeam', {}).get('abbrev'), fixture.get('awayTeam', {}).get('abbrev')}
             if roster_owner.get(str(pick['player_id'])) != pick['team'] or pick['team'] not in valid_teams:
                 raise ValueError(f'Pick {profile}: association joueur-match non verifiee')
+            if not injury_eligible(pick['player'], pick['team'], injuries):
+                raise ValueError(f'Pick {profile}: joueur signale blesse par ESPN')
     log.info('Picks proposes : %d ; hors plage profil : %d', sum(map(len, picks.values())), sum(bool(p.get('fallback')) for values in picks.values() for p in values))
     inserted = 0
     duplicates = 0
     log.info('Source prioritaire: effectifs NHL officiels (api-web.nhle.com); Covers = recoupement manuel, non utilise automatiquement')
-    log.info('Un effectif confirme ne garantit PAS la participation au match; blessures/compositions non certifiees')
+    log.info('Blessures ESPN filtrees (toute entree exclue); absence de signalement ne confirme PAS la participation')
+    log.info('CBS Sports / Daily Faceoff: recoupement manuel seulement; pas de scraping automatique')
     for profile in PROFILES:
         for pick in picks[profile]:
             # Unique key: a given model/profile/game is snapshotted once, even across reruns.
@@ -142,7 +185,7 @@ def generate(conn, now=None, fetch=None, roster_fetch=None):
                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (profile,game_id) DO NOTHING RETURNING id''',
                     (profile,pick['game_id'],pick['player_id'],pick['match'],pick['selection'],
-                     pick['market'],pick['probability'],pick['time'],now,'roster_verified',VERSION,
+                     pick['market'],pick['probability'],pick['time'],now,'roster_injury_checked',VERSION,
                      'fallback_hors_plage' if pick.get('fallback') else 'dans_plage'))
                 if cur.fetchone() is not None:
                     inserted += 1
@@ -188,10 +231,10 @@ def settle(conn):
 
 def main():
     logging.basicConfig(level=logging.INFO, format='%(levelname)s | %(message)s')
-    log.info('Demarrage %s : effectifs NHL officiels, audit des doublons et reglement prudent', VERSION)
+    log.info('Demarrage %s : effectifs NHL, blessures ESPN, audit et reglement prudent', VERSION)
     with psycopg.connect(os.environ['SUPABASE_DB_URL']) as conn:
-        created = generate(conn)
         settled = settle(conn)
+        created = generate(conn)
     print(f'{VERSION}: {created} predictions added, {settled} pending predictions evaluated')
 
 
