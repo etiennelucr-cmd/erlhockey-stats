@@ -11,7 +11,7 @@ def show():
                'Les choix personnels sont comptés séparément. Les taux excluent les matchs en attente et les annulations.')
     try:
         with connect() as conn:
-            auto = pd.read_sql_query('SELECT profile,selection,probability,status,kickoff,created_at FROM v21_auto_picks',conn)
+            auto = pd.read_sql_query('SELECT profile,selection,probability,status,kickoff,created_at,validation_state,validation_version,validation_note FROM v21_auto_picks',conn)
             chosen = pd.read_sql_query('''SELECT c.profile,l.selection,l.probability,l.status,l.kickoff,c.created_at
                 FROM tracked_combos c JOIN tracked_legs l ON l.combo_id=c.id
                 WHERE c.profile LIKE 'NHL Picks V20 | %%' ''',conn)
@@ -29,9 +29,16 @@ def show():
             if not df.empty:
                 df['created_at'] = pd.to_datetime(df['created_at'],utc=True)
                 df.drop(df[df.created_at < cutoff].index,inplace=True)
+    if not auto.empty:
+        legacy_count = int((auto.validation_state != 'roster_verified').sum())
+        if legacy_count:
+            st.warning(f'{legacy_count} ancien(s) pick(s) non certifie(s) conserves pour audit et exclus du taux automatique certifie.')
+        auto_certified = auto[auto.validation_state == 'roster_verified'].copy()
+    else:
+        auto_certified = auto
     result=[]
     for profile in PROFILES:
-        for source,frame in [('Automatique',auto),('Mes choix',chosen)]:
+        for source,frame in [('Automatique certifie',auto_certified),('Mes choix',chosen)]:
             subset=frame[frame.profile==profile] if not frame.empty else frame
             won=int((subset.status=='won').sum()) if not subset.empty else 0
             lost=int((subset.status=='lost').sum()) if not subset.empty else 0
@@ -46,3 +53,4 @@ def show():
         st.subheader('Historique des prédictions automatiques')
         profile=st.selectbox('Profil automatique',PROFILES,key='v21_auto_profile')
         st.dataframe(auto[auto.profile==profile].sort_values('kickoff',ascending=False),hide_index=True,use_container_width=True)
+        st.caption('Les anciennes lignes non certifiees sont visibles ici pour audit, mais exclues des taux automatiques certifies.')

@@ -1,5 +1,6 @@
 """Immutable daily automatic picks, separated from user-followed picks."""
 import os
+import logging
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 import pandas as pd
@@ -9,6 +10,8 @@ from nhl_picks_v20 import candidate_picks, PROFILES
 
 PARIS = ZoneInfo('Europe/Paris')
 PREFIX = 'Auto V21 | '
+VERSION = 'V21.4'
+log = logging.getLogger('erlhockey.v214')
 
 
 def current_roster_ids(teams, session=None, roster_fetch=None):
@@ -63,32 +66,48 @@ def generate(conn, now=None, fetch=None, roster_fetch=None):
             response.raise_for_status()
             return response.json()
     games = upcoming_games(now, fetch)
+    log.info('Matchs futurs detectes : %d', len(games))
     if not games:
+        log.info('Aucun match eligible pour la fenetre Paris aujourd hui/demain')
         return 0
     teams = {team.get('abbrev') for g, _ in games.values() for team in (g.get('homeTeam', {}), g.get('awayTeam', {}))}
     teams.discard(None)
     # The historical last team is NOT evidence of current roster membership.
     # Stop rather than publish false picks if official rosters cannot be fetched.
     verified_rosters = current_roster_ids(teams, roster_fetch=roster_fetch)
+    log.info('Equipes NHL verifiees : %d ; joueurs dans les effectifs : %d', len(verified_rosters), sum(map(len, verified_rosters.values())))
     # Only finalized historical rows strictly before generation time: no look-ahead.
+    # Current NHL roster is the source of truth; historic team can be stale after a transfer.
+    roster_owner = {pid: team for team, members in verified_rosters.items() for pid in members}
+    if len(roster_owner) != sum(map(len, verified_rosters.values())):
+        raise ValueError('Un meme identifiant joueur apparait dans plusieurs effectifs officiels')
     roster = pd.read_sql_query('''SELECT DISTINCT ON (p.player_id) p.player_id,p.player_name,p.team
         FROM nhl_player_games p JOIN nhl_games g ON g.game_id=p.game_id
         WHERE g.game_state IN ('OFF','FINAL') AND g.start_time_utc < %(cutoff)s
-          AND p.team = ANY(%(teams)s)
         ORDER BY p.player_id,p.game_date DESC,p.game_id DESC''', conn,
         params={'cutoff':now,'teams':list(teams)})
+    log.info('Joueurs historiques candidats : %d', len(roster))
     if roster.empty:
+        log.warning('Aucun joueur historique disponible')
         return 0
     rows = []
+    rejected = 0
+    moved = 0
     for gid, (g, kickoff) in games.items():
         away = g.get('awayTeam',{}).get('abbrev')
         home = g.get('homeTeam',{}).get('abbrev')
-        for p in roster[roster.team.isin((away,home))].itertuples():
-            if str(p.player_id) not in verified_rosters.get(p.team, set()):
+        for p in roster.itertuples():
+            current_team = roster_owner.get(str(p.player_id))
+            if current_team not in (away, home):
+                rejected += 1
                 continue
+            if p.team != current_team:
+                moved += 1
             rows.append({'game_id':gid,'kickoff':kickoff,'Match':f'{away} @ {home}',
-                         'Joueur':p.player_name,'player_id':p.player_id,'Équipe':p.team})
+                         'Joueur':p.player_name,'player_id':p.player_id,'Équipe':current_team})
+    log.info('Candidatures joueurs-match valides : %d ; exclues mauvaise equipe/effectif : %d ; historiques avec equipe perimee corriges : %d', len(rows), rejected, moved)
     if not rows:
+        log.warning('Aucun joueur-match confirme dans les effectifs officiels')
         return 0
     ids = sorted({str(r['player_id']) for r in rows})
     history = pd.read_sql_query('''WITH ranked AS (
@@ -99,18 +118,39 @@ def generate(conn, now=None, fetch=None, roster_fetch=None):
        AND p.player_id::text = ANY(%(ids)s) AND p.points IS NOT NULL AND p.goals IS NOT NULL
     ) SELECT * FROM ranked WHERE rn <= 10''', conn, params={'cutoff':now,'ids':ids})
     picks = candidate_picks(rows, history)
+    # Defense in depth: the candidate algorithm must never bypass the official roster mapping.
+    for profile, proposals in picks.items():
+        for pick in proposals:
+            game = games.get(int(pick['game_id']))
+            if game is None:
+                raise ValueError(f'Pick {profile}: match inconnu')
+            fixture = game[0]
+            valid_teams = {fixture.get('homeTeam', {}).get('abbrev'), fixture.get('awayTeam', {}).get('abbrev')}
+            if roster_owner.get(str(pick['player_id'])) != pick['team'] or pick['team'] not in valid_teams:
+                raise ValueError(f'Pick {profile}: association joueur-match non verifiee')
+    log.info('Picks proposes : %d ; hors plage profil : %d', sum(map(len, picks.values())), sum(bool(p.get('fallback')) for values in picks.values() for p in values))
     inserted = 0
+    duplicates = 0
+    log.info('Source prioritaire: effectifs NHL officiels (api-web.nhle.com); Covers = recoupement manuel, non utilise automatiquement')
+    log.info('Un effectif confirme ne garantit PAS la participation au match; blessures/compositions non certifiees')
     for profile in PROFILES:
         for pick in picks[profile]:
             # Unique key: a given model/profile/game is snapshotted once, even across reruns.
             with conn.cursor() as cur:
                 cur.execute('''INSERT INTO v21_auto_picks
-                    (profile,game_id,player_id,match_label,selection,market,probability,kickoff,created_at)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    (profile,game_id,player_id,match_label,selection,market,probability,kickoff,created_at,validation_state,validation_version,validation_note)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     ON CONFLICT (profile,game_id) DO NOTHING RETURNING id''',
                     (profile,pick['game_id'],pick['player_id'],pick['match'],pick['selection'],
-                     pick['market'],pick['probability'],pick['time'],now))
-                inserted += int(cur.fetchone() is not None)
+                     pick['market'],pick['probability'],pick['time'],now,'roster_verified',VERSION,
+                     'fallback_hors_plage' if pick.get('fallback') else 'dans_plage'))
+                if cur.fetchone() is not None:
+                    inserted += 1
+                else:
+                    duplicates += 1
+    log.info('Picks ajoutes : %d ; doublons ignores : %d', inserted, duplicates)
+    if duplicates:
+        log.warning('%d picks deja presents ne sont pas remplaces, meme si leur joueur est suspect', duplicates)
     return inserted
 
 
@@ -120,14 +160,18 @@ def settle(conn):
         g.home_score,g.away_score
         FROM v21_auto_picks a JOIN nhl_games g ON g.game_id=a.game_id
         WHERE a.status='pending' AND g.game_state IN ('OFF','FINAL')""").fetchall()
+    log.info('Picks pending avec match termine en base : %d', len(rows))
     settled = 0
+    incomplete = 0
     for pick_id, gid, player_id, market, home_score, away_score in rows:
         if home_score is None or away_score is None:
             continue
         stats = conn.execute("""SELECT goals,points FROM nhl_player_games
             WHERE game_id=%s AND player_id::text=%s""", (gid, str(player_id))).fetchall()
         if len(stats) != 1 or stats[0][0] is None or stats[0][1] is None:
-            outcome = 'void'
+            # Une collecte manquante ne prouve pas une absence ou un pari annule.
+            incomplete += 1
+            continue
         elif market == '1+ but':
             outcome = 'won' if stats[0][0] >= 1 else 'lost'
         elif market == '1+ point':
@@ -138,14 +182,17 @@ def settle(conn):
             outcome = 'void'
         conn.execute("UPDATE v21_auto_picks SET status=%s WHERE id=%s AND status='pending'", (outcome, pick_id))
         settled += 1
+    log.info('Picks evalues : %d ; en attente de statistiques fiables : %d', settled, incomplete)
     return settled
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s | %(message)s')
+    log.info('Demarrage %s : effectifs NHL officiels, audit des doublons et reglement prudent', VERSION)
     with psycopg.connect(os.environ['SUPABASE_DB_URL']) as conn:
         created = generate(conn)
         settled = settle(conn)
-    print(f'V21: {created} predictions added, {settled} pending predictions evaluated')
+    print(f'{VERSION}: {created} predictions added, {settled} pending predictions evaluated')
 
 
 if __name__ == '__main__':
