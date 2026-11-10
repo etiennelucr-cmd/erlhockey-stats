@@ -7,10 +7,11 @@ import html
 import pandas as pd
 import streamlit as st
 import psycopg
-from betting_v12 import show as show_betting_v12
-from combo_v12 import show as show_combo_v12
+from nhl_picks_v20 import show as show_nhl_picks_v20
+from combo_v20 import show as show_combo_v12
 from espn_injuries_v19 import apply_injury_filter
 from tracker_v14 import show as show_tracker_v14
+from profile_stats_v20 import show as show_profile_stats_v20
 from winning_selections_v18 import show as show_winning_v18
 
 st.set_page_config(page_title="ErlHockey Stats", page_icon="🏒", layout="wide")
@@ -29,11 +30,11 @@ st.markdown("<style>" + (Path(__file__).parent / "theme_v12.css").read_text(enco
 def render_v12_hero(page_name):
     labels = {
         "🏠 Tableau de bord": ("Tableau de bord V16", "Matchs du jour et demain · résultats des combinés suivis"),
+        "📈 Bilan des profils V20": ("Bilan des profils V20", "Statistiques cumulées des combinés et sélections par niveau de risque"),
         "🔥 Points 5/5": ("Points 5/5", "Joueurs en série qui jouent aujourd’hui ou demain"),
-        "🎯 Betting Center V12": ("Betting Center V12", "Matchs, joueurs, séries et probabilités expérimentales"),
         "🧩 Combo Builder V14": ("Combo Builder V14", "Sélections personnalisables · matchs distincts · ce soir et demain"),
         "🏆 Sélections gagnantes": ("Sélections gagnantes V18", "Rejouer les marchés historiquement gagnants lors des prochains matchs"),
-        "🎯 NHL Picks": ("NHL Picks · Top 10", "Classement automatique des joueurs des matchs du jour et de demain"),
+        "🎯 NHL Picks": ("NHL Picks V20 · 5 profils", "Picks suivis, résultats et comparaison des cinq catégories"),
     }
     title, subtitle = labels.get(page_name, (page_name.split(" ", 1)[-1], "Statistiques NHL • Données réelles et historiques"))
     now = datetime.now(PARIS).strftime("%d/%m/%Y %H:%M")
@@ -329,7 +330,7 @@ def show_table(rows, columns=None):
 with st.sidebar:
     st.title("🏒 ErlHockey")
     st.caption("NHL • Stats V18")
-    page=st.radio("Navigation", ["🏠 Tableau de bord", "🔥 Points 5/5", "🎯 Betting Center V12", "🧩 Combo Builder V14", "🏆 Sélections gagnantes", "📊 Mes combinés V14", "🎯 NHL Picks"], key="navigation_page")
+    page=st.radio("Navigation", ["🏠 Tableau de bord", "📈 Bilan des profils V20", "🔥 Points 5/5", "🧩 Combo Builder V14", "🏆 Sélections gagnantes", "📊 Mes combinés V14", "🎯 NHL Picks"], key="navigation_page")
     if st.button("🔄 Rafraîchir les données", use_container_width=True):
         get_json.clear(); leaders.clear(); game_log.clear(); goals_three_of_five.clear(); perfect_five_streaks.clear(); recent_player_form.clear(); recent_team_form.clear(); db_query.clear(); st.rerun()
     st.caption("Données publiques NHL. Les statistiques peuvent être différées.")
@@ -364,8 +365,8 @@ try:
         else:
             st.info("Aucun match à venir aujourd'hui à analyser.")
         st.caption("En NHL, il n'y a pas de match nul au résultat final : une égalité après 60 minutes mène à la prolongation ou aux tirs au but. La mention « match serré » n'est pas un pronostic de nul réglementaire. Gardiens, blessures et compositions non pris en compte.")
-    elif page=="🎯 Betting Center V12":
-        show_betting_v12(db_query)
+    elif page=="📈 Bilan des profils V20":
+        show_profile_stats_v20()
     elif page=="🧩 Combo Builder V14":
         show_combo_v12(db_query)
     elif page=="🏆 Sélections gagnantes":
@@ -542,7 +543,7 @@ try:
                                   else 'Modéré' if played >= 4 and recent_games >= 1
                                   else 'À surveiller')
                         rows.append({
-                            'Heure (Paris)': game_time(g), 'Match': f'{away} @ {home}',
+                            'game_id': g.get('id'), 'kickoff': datetime.fromisoformat(g['startTimeUTC'].replace('Z', '+00:00')), 'Heure (Paris)': game_time(g), 'Match': f'{away} @ {home}',
                             'Joueur': p['joueur'], 'player_id': p['player_id'], 'Équipe': p['equipe'],
                             'Adversaire': home if p['equipe'] == away else away,
                             'Signal': signal, 'Score indicatif': score,
@@ -560,61 +561,7 @@ try:
                     st.caption(f'V19 : {unverified_count} joueurs exclus (blessures ESPN / CSV). {source_msg}.')
                 if unknown:
                     st.warning(f'{len(unknown)} joueurs non confirmés : absence de la liste des blessures ≠ présence assurée.')
-                rows.sort(key=lambda r: (-r['Score indicatif'], -r['Matchs avec point / 5'],
-                                         -r['Points / 5'], r['Joueur']))
-                st.caption(f"Top 10 automatique parmi {len(rows)} joueurs éligibles aux rencontres à venir. "
-                           "Le score est un indicateur de classement, pas une probabilité de gain.")
-                visible = rows[:10]
-                if not visible:
-                    st.info("Aucun joueur avec cinq matchs historiques disponibles pour les rencontres à venir.")
-                else:
-                    # Historique étendu uniquement pour les dix joueurs affichés.
-                    ids = [int(r['player_id']) for r in visible]
-                    extended = db_query("""
-                        WITH ranked AS (
-                            SELECT p.player_id, p.points, p.goals,
-                                   ROW_NUMBER() OVER (PARTITION BY p.player_id
-                                       ORDER BY p.game_date DESC, p.game_id DESC) AS rn
-                            FROM nhl_player_games p
-                            JOIN nhl_games g ON g.game_id=p.game_id
-                            WHERE g.game_state IN ('OFF','FINAL') AND p.player_id = ANY(%s)
-                        ) SELECT player_id, rn, points, goals FROM ranked WHERE rn <= 20
-                    """, (ids,))
-                    for idx, r in enumerate(visible, 1):
-                        hist = extended[extended['player_id'] == r['player_id']].sort_values('rn')
-                        point_values = [int(v) for v in hist['points'].tolist()]
-                        goal_values = [int(v) for v in hist['goals'].tolist()]
-                        def streak(vals):
-                            n = 0
-                            for v in vals:
-                                if (v > 0) != (vals[0] > 0):
-                                    break
-                                n += 1
-                            return n if vals and vals[0] > 0 else -n
-                        def pct(vals, window):
-                            subset = vals[:window]
-                            return f"{sum(v > 0 for v in subset)/len(subset):.0%}" if subset else '—'
-                        p_streak, g_streak = streak(point_values), streak(goal_values)
-                        with st.container(border=True):
-                            left, right = st.columns([3, 1])
-                            with left:
-                                st.markdown(f"### #{idx} · {html.escape(str(r['Joueur']))}")
-                                st.caption(f"{r['Équipe']} vs {r['Adversaire']} · {r['Match']} · {r['Heure (Paris)']} (Paris)")
-                            with right:
-                                st.metric("Score de forme", r['Score indicatif'])
-                            c1,c2,c3,c4 = st.columns(4)
-                            c1.metric("Points 1+ / 5", pct(point_values,5))
-                            c2.metric("Buts 1+ / 5", pct(goal_values,5))
-                            c3.metric("Série points", f"+{p_streak}" if p_streak>0 else str(p_streak))
-                            c4.metric("Série buts", f"+{g_streak}" if g_streak>0 else str(g_streak))
-                            st.markdown("**Points (récent → ancien)** : " + " · ".join(map(str,point_values[:5])))
-                            st.markdown("**Buts (récent → ancien)** : " + " · ".join(map(str,goal_values[:5])))
-                            st.caption("Fréquences historiques : " + "  |  ".join(
-                                f"{n} matchs : points {pct(point_values,n)}, buts {pct(goal_values,n)}"
-                                for n in (5,10,20) if len(point_values)>=n))
-                    st.caption("Streak positif = matchs consécutifs avec 1+ point/but ; négatif = matchs consécutifs sans. "
-                               "Les historiques incomplets ne sont pas extrapolés. "
-                               "Blessures, gardiens et compositions non confirmés.")
+                show_nhl_picks_v20(rows, db_query)
     elif page=="👤 Statistiques joueurs":
         st.caption("Recherche parmi tous les joueurs présents dans l'historique Supabase. Statistiques limitées aux matchs déjà collectés.")
         with st.spinner("Chargement des joueurs enregistrés…"):
