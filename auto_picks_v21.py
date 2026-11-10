@@ -11,6 +11,31 @@ PARIS = ZoneInfo('Europe/Paris')
 PREFIX = 'Auto V21 | '
 
 
+def current_roster_ids(teams, session=None, roster_fetch=None):
+    """Verified current NHL roster by team; fail closed if any team cannot be checked."""
+    session = session or requests.Session()
+    verified = {}
+    for team in sorted(teams):
+        if roster_fetch is None:
+            response = session.get(f'https://api-web.nhle.com/v1/roster/{team}/current', timeout=25)
+            response.raise_for_status()
+            payload = response.json()
+        else:
+            payload = roster_fetch(team)
+        if not isinstance(payload, dict) or not any(k in payload for k in ('forwards','defensemen','goalies')):
+            raise ValueError(f'Roster NHL indisponible ou incomplet pour {team}')
+        ids = set()
+        for group in ('forwards','defensemen','goalies'):
+            for player in payload.get(group, []):
+                if player.get('id') is not None:
+                    ids.add(str(player['id']))
+        if not ids:
+            raise ValueError(f'Aucun joueur NHL vérifié pour {team}')
+        verified[team] = ids
+    return verified
+
+
+
 def upcoming_games(now, fetch):
     """Upcoming NHL fixtures on Paris today/tomorrow, fetched for adjacent NHL dates."""
     dates = [(now.astimezone(PARIS).date() + timedelta(days=d)).isoformat() for d in (-1,0,1,2)]
@@ -27,7 +52,7 @@ def upcoming_games(now, fetch):
     return games
 
 
-def generate(conn, now=None, fetch=None):
+def generate(conn, now=None, fetch=None, roster_fetch=None):
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None:
         raise ValueError('now must be timezone-aware')
@@ -42,6 +67,9 @@ def generate(conn, now=None, fetch=None):
         return 0
     teams = {team.get('abbrev') for g, _ in games.values() for team in (g.get('homeTeam', {}), g.get('awayTeam', {}))}
     teams.discard(None)
+    # The historical last team is NOT evidence of current roster membership.
+    # Stop rather than publish false picks if official rosters cannot be fetched.
+    verified_rosters = current_roster_ids(teams, roster_fetch=roster_fetch)
     # Only finalized historical rows strictly before generation time: no look-ahead.
     roster = pd.read_sql_query('''SELECT DISTINCT ON (p.player_id) p.player_id,p.player_name,p.team
         FROM nhl_player_games p JOIN nhl_games g ON g.game_id=p.game_id
@@ -56,9 +84,13 @@ def generate(conn, now=None, fetch=None):
         away = g.get('awayTeam',{}).get('abbrev')
         home = g.get('homeTeam',{}).get('abbrev')
         for p in roster[roster.team.isin((away,home))].itertuples():
+            if str(p.player_id) not in verified_rosters.get(p.team, set()):
+                continue
             rows.append({'game_id':gid,'kickoff':kickoff,'Match':f'{away} @ {home}',
                          'Joueur':p.player_name,'player_id':p.player_id,'Équipe':p.team})
-    ids = roster.player_id.astype(str).tolist()
+    if not rows:
+        return 0
+    ids = sorted({str(r['player_id']) for r in rows})
     history = pd.read_sql_query('''WITH ranked AS (
        SELECT p.player_id,p.points,p.goals,
        ROW_NUMBER() OVER(PARTITION BY p.player_id ORDER BY p.game_date DESC,p.game_id DESC) rn
