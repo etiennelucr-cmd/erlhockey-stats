@@ -9,7 +9,7 @@ from auto_performance_v23 import certified_mask, summary as auto_summary
 
 def show():
     st.subheader('🤖 Prédictions automatiques · Bilan et suivi')
-    st.caption('Version du bilan : V25 · couleurs par origine + bilan V24.1')
+    st.caption('Version du bilan : V25.1 · couleurs visibles + bilan V24.1')
     st.caption('Les prédictions automatiques sont figées avant le match, même si tu ne les coches pas. '
                'Les choix personnels sont comptés séparément. Les taux excluent les matchs en attente et les annulations.')
     try:
@@ -47,23 +47,45 @@ def show():
         for label, frame in [('Automatique (tous)',auto),('Automatique certifié',certified),
                              ('Automatique historique',historical),('Mes choix',chosen)]:
             result.extend(auto_summary(frame,[profile],label).drop(columns=['Réussite (%)']).to_dict('records'))
-    # Row-level color coding makes provenance readable without changing any metrics.
+    # V25.1: render a semantic HTML table. Streamlit's dataframe canvas may
+    # ignore Pandas Styler row background styles in some versions/themes.
+    from html import escape
     palette = {
-        'Automatique (tous)': ('rgba(48, 126, 218, 0.17)', '#8DC4FF'),
-        'Automatique certifié': ('rgba(30, 151, 104, 0.17)', '#70E2AE'),
-        'Automatique historique': ('rgba(191, 126, 29, 0.19)', '#FFD084'),
-        'Mes choix': ('rgba(137, 83, 205, 0.21)', '#D7B4FF'),
+        'Automatique (tous)': ('#142e4c', '#94caff'),
+        'Automatique certifié': ('#12382f', '#81e8bb'),
+        'Automatique historique': ('#3d301c', '#ffd28b'),
+        'Mes choix': ('#322344', '#e1bdff'),
     }
     st.caption('🔵 Automatique (tous)  ·  🟢 Certifié  ·  🟠 Historique  ·  🟣 Mes choix')
     result_df = pd.DataFrame(result)
-    def style_origin(row):
-        bg, fg = palette.get(row['Origine'], ('transparent', 'inherit'))
-        return [f'background-color: {bg}; color: {fg};' if col == 'Origine'
-                else f'background-color: {bg};' for col in row.index]
-    styled = result_df.style.apply(style_origin, axis=1)
-    st.dataframe(styled, hide_index=True, use_container_width=True)
+    headers = ''.join(f'<th>{escape(str(col))}</th>' for col in result_df.columns)
+    lines = []
+    for _, row in result_df.iterrows():
+        bg, fg = palette.get(str(row['Origine']), ('#161616', '#f5f5f5'))
+        cells = []
+        for col, val in row.items():
+            cell = escape(str(val)) if pd.notna(val) else '—'
+            if col == 'Origine':
+                cell = f'<strong style="color:{fg}">{cell}</strong>'
+            elif col == 'Gagnés':
+                cell = f'<span style="color:#8be2b3">{cell}</span>'
+            elif col == 'Perdus':
+                cell = f'<span style="color:#ff9999">{cell}</span>'
+            cells.append(f'<td>{cell}</td>')
+        lines.append(f'<tr style="background-color:{bg}">' + ''.join(cells) + '</tr>')
+    table_html = (
+        '<div class="eh-v251-table" style="overflow:auto;max-height:520px;border:1px solid #355979;border-radius:12px">'
+        '<table style="border-collapse:collapse;width:100%;min-width:760px;color:#f4f6fa;font-size:13px">'
+        '<thead style="position:sticky;top:0;background:#25282d;z-index:1"><tr>' + headers + '</tr></thead>'
+        '<tbody>' + ''.join(lines) + '</tbody></table></div>'
+        '<style>.eh-v251-table th,.eh-v251-table td{padding:9px 11px;text-align:left;'
+        'border-bottom:1px solid #42505d;white-space:nowrap}'
+        '.eh-v251-table th{font-weight:600;color:#e5e8ec}'
+        '.eh-v251-table tr:hover{filter:brightness(1.18)}</style>'
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
 
-    with st.expander('🔎 Diagnostic du bilan V25'):
+    with st.expander('🔎 Diagnostic du bilan V25.1'):
         st.caption('Les picks automatiques historiques sont comptés dans le total global, sans certification rétroactive.')
         st.write('Statuts de validation :')
         st.dataframe(auto['validation_state'].fillna('(vide)').value_counts().rename_axis('Statut').reset_index(name='Nombre'),hide_index=True)
