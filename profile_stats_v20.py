@@ -1,6 +1,7 @@
 """V21.9 unified profile analytics: tracked combinations and certified auto picks."""
 import pandas as pd
 from ui_format_v22 import audit_view
+from auto_performance_v23 import certified_mask, summary as performance_summary
 
 PROFILES = ['Prudent', 'Modéré', 'Équilibré', 'Risqué', 'Ultra risqué']
 
@@ -40,18 +41,13 @@ def summarize(combos, legs):
 
 
 def auto_summary(auto):
-    """Certified-only performance; legacy rows never enter denominators."""
-    certified = auto[auto['validation_state'].eq('roster_verified') & auto['validation_version'].notna()].copy()
-    rows = []
-    for profile in PROFILES:
-        subset = certified[certified['profile'] == profile]
-        won = int(subset['status'].eq('won').sum())
-        lost = int(subset['status'].eq('lost').sum())
-        rows.append({'Profil':profile,'Certifiés':len(subset),'Gagnés':won,'Perdus':lost,
-                     'En attente':int(subset['status'].eq('pending').sum()),
-                     'Annulés':int(subset['status'].eq('void').sum()),
-                     'Réussite (%)':round(100*won/(won+lost),2) if won+lost else None})
-    return pd.DataFrame(rows), certified
+    """All automatic picks count; certification is reported separately."""
+    certified = auto[certified_mask(auto)].copy()
+    all_stats = performance_summary(auto, PROFILES)
+    all_stats = all_stats.rename(columns={'Total':'Picks automatiques'})
+    counts = certified.groupby('profile').size()
+    all_stats['Certifiés'] = all_stats['Profil'].map(counts).fillna(0).astype(int)
+    return all_stats, certified
 
 
 def _pct(v):
@@ -69,7 +65,7 @@ def show():
     div[data-testid="stMetric"]{border-radius:16px!important}
     </style>''',unsafe_allow_html=True)
     st.markdown('<div class="eh-analytics-intro"><h3>📊 Tableau de performance · 5 profils</h3>'
-                '<p>Deux historiques indépendants : tes combinés personnels et les prédictions automatiques certifiées.</p></div>',
+                '<p>Deux historiques indépendants : tes combinés personnels et toutes les prédictions automatiques, avec certification distincte.</p></div>',
                 unsafe_allow_html=True)
     period = st.selectbox('📅 Période de création', ['Tout l’historique','7 jours','30 jours','90 jours','365 jours'],key='v216_period')
     days = {'7 jours':7,'30 jours':30,'90 jours':90,'365 jours':365}.get(period)
@@ -91,7 +87,7 @@ def show():
                 df.drop(df.index[dates < cutoff],inplace=True)
     summary = summarize(combos,legs)
     auto_stats, certified = auto_summary(auto)
-    legacy = auto[~(auto['validation_state'].eq('roster_verified') & auto['validation_version'].notna())]
+    legacy = auto[~certified_mask(auto)]
     st.caption('📌 Les taux sont calculés uniquement sur les résultats réglés ; les attentes et annulations sont exclues.')
     t1,t2,t3 = st.tabs(['🎟️ Mes combinés','🤖 Prédictions automatiques','📈 Comparaison'])
     with t1:
@@ -118,18 +114,18 @@ def show():
         st.bar_chart(summary.set_index('Profil')[['Sélections gagnées','Sélections perdues']],horizontal=True)
     with t2:
         a,b,c,d = st.columns(4)
-        a.metric('Picks certifiés',len(certified))
+        a.metric('Picks automatiques',len(auto))
         b.metric('Gagnés',int(auto_stats['Gagnés'].sum()))
         c.metric('En attente',int(auto_stats['En attente'].sum()))
         d.metric('Archives non certifiées',len(legacy))
         if len(legacy):
-            st.warning(f'{len(legacy)} ancien(s) pick(s) conservé(s) pour audit, mais exclu(s) des performances certifiées.')
-        st.caption('Certification = validation_state « roster_verified » ET version renseignée. Une certification ne garantit pas la participation effective du joueur.')
-        st.dataframe(auto_stats,hide_index=True,width='stretch',column_config={'Réussite (%)':st.column_config.ProgressColumn('Réussite certifiée',min_value=0,max_value=100,format='%.1f %%')})
-        if len(certified):
+            st.info(f'{len(legacy)} pick(s) historiques non certifiés inclus dans le bilan global, sans certification rétroactive.')
+        st.caption('Certification technique = roster_verified ou roster_injury_checked avec version renseignée. Ne garantit pas la présence du joueur au match.')
+        st.dataframe(auto_stats,hide_index=True,width='stretch',column_config={'Réussite (%)':st.column_config.ProgressColumn('Réussite automatique',min_value=0,max_value=100,format='%.1f %%')})
+        if len(auto):
             st.bar_chart(auto_stats.set_index('Profil')[['Gagnés','Perdus','En attente']])
         else:
-            st.info('Aucun pick certifié sur cette période. Les prochains matchs pourront alimenter cette section.')
+            st.info('Aucun pick automatique sur cette période.')
         with st.expander('🔎 Historique des prédictions automatiques (audit)'):
             if auto.empty:
                 st.info('Aucune prédiction automatique enregistrée sur cette période.')
@@ -143,9 +139,9 @@ def show():
     with t3:
         st.subheader('Comparaison des cinq profils')
         comparison = summary[['Profil','Réussite combinés (%)','Réussite sélections (%)']].merge(
-            auto_stats[['Profil','Réussite (%)','Certifiés']],on='Profil',how='left')
-        comparison = comparison.rename(columns={'Réussite (%)':'Réussite auto certifiée (%)'})
-        st.dataframe(comparison,hide_index=True,width='stretch',column_config={'Réussite sélections (%)':st.column_config.ProgressColumn('Sélections (%)',min_value=0,max_value=100,format='%.1f %%'),'Réussite combinés (%)':st.column_config.ProgressColumn('Combinés (%)',min_value=0,max_value=100,format='%.1f %%'),'Réussite auto certifiée (%)':st.column_config.ProgressColumn('Auto (%)',min_value=0,max_value=100,format='%.1f %%')})
+            auto_stats[['Profil','Réussite (%)','Picks automatiques','Certifiés']],on='Profil',how='left')
+        comparison = comparison.rename(columns={'Réussite (%)':'Réussite auto globale (%)'})
+        st.dataframe(comparison,hide_index=True,width='stretch',column_config={'Réussite sélections (%)':st.column_config.ProgressColumn('Sélections (%)',min_value=0,max_value=100,format='%.1f %%'),'Réussite combinés (%)':st.column_config.ProgressColumn('Combinés (%)',min_value=0,max_value=100,format='%.1f %%'),'Réussite auto globale (%)':st.column_config.ProgressColumn('Auto (%)',min_value=0,max_value=100,format='%.1f %%')})
         st.caption('Les taux personnels et automatiques reposent sur des échantillons distincts : ils ne doivent pas être additionnés.')
         st.subheader('📌 Lecture rapide')
         settled = summary.dropna(subset=['Réussite sélections (%)'])

@@ -46,7 +46,39 @@ RANGES = {'Prudent':(.72,1.0), 'Modéré':(.62,.82), 'Équilibré':(.50,.72),
           'Risqué':(.35,.60), 'Ultra risqué':(.15,.45)}
 
 
-def candidate_picks(rows, history, max_per_profile=None, min_games=5):
+def consecutive_streak(values, threshold):
+    """Signed streak: positive = consecutive hits, negative = consecutive misses."""
+    numbers = pd.to_numeric(pd.Series(values), errors='coerce').dropna().tolist()
+    if not numbers:
+        return 0
+    hit = numbers[0] >= threshold
+    length = 0
+    for value in numbers:
+        if (value >= threshold) != hit:
+            break
+        length += 1
+    return length if hit else -length
+
+
+def opponent_defense(games_frame):
+    """Recent goals conceded per team, from final NHL games only; descriptive, not calibrated."""
+    if games_frame is None or games_frame.empty:
+        return {}
+    frame = games_frame.copy()
+    for column in ('home_score', 'away_score'):
+        frame[column] = pd.to_numeric(frame[column], errors='coerce')
+    frame = frame.dropna(subset=['home_score', 'away_score']).sort_values('game_date', ascending=False)
+    teams = {}
+    for _, game in frame.iterrows():
+        for team, conceded in ((game['home_team'], game['away_score']), (game['away_team'], game['home_score'])):
+            if pd.isna(team):
+                continue
+            teams.setdefault(str(team), []).append(float(conceded))
+    return {team: {'games': len(values[:10]), 'goals_against_avg': sum(values[:10]) / len(values[:10])}
+            for team, values in teams.items() if values}
+
+
+def candidate_picks(rows, history, max_per_profile=None, min_games=5, defense=None):
     """One suggested player pick per eligible game and profile.
 
     Prefer a distinct player across profiles for a given game where possible.
@@ -54,6 +86,7 @@ def candidate_picks(rows, history, max_per_profile=None, min_games=5):
     explicitly marked when no candidate is inside the target range.
     """
     results = {name: [] for name in PROFILES}
+    defense = defense or {}
     if history.empty:
         return results
     grouped = {str(pid): frame.sort_values('rn') for pid, frame in history.groupby('player_id')}
@@ -75,7 +108,15 @@ def candidate_picks(rows, history, max_per_profile=None, min_games=5):
                     'selection': f"{row['Joueur']} — {market}", 'market': market,
                     'probability': probability, 'hits': hits, 'sample': len(vals),
                     'player': row['Joueur'], 'player_id': str(row['player_id']),
-                    'team': row['Équipe']}
+                    'team': row['Équipe'],
+                    'opponent': row.get('Adversaire', ''),
+                    'opponent_defense': defense.get(str(row.get('Adversaire', ''))),
+                    'point_streak': consecutive_streak(hist['points'].head(10), 1),
+                    'goal_streak': consecutive_streak(hist['goals'].head(10), 1),
+                    'market_streak': consecutive_streak(vals, threshold),
+                    'recent_values': [int(v) for v in vals.tolist()],
+                    'hits_5': int((vals.head(5) >= threshold).sum()),
+                    'sample_5': min(5, len(vals))}
             games.setdefault(int(game_id), []).append(item)
     for game_id, options in sorted(games.items(), key=lambda pair: (pair[1][0]['time'], pair[0])):
         used_players = set()
@@ -132,7 +173,17 @@ def show(rows, db_query):
             WHERE g.game_state IN ('OFF','FINAL') AND p.player_id=ANY(%s)
               AND p.points IS NOT NULL AND p.goals IS NOT NULL
         ) SELECT * FROM ranked WHERE rn<=10""", (ids,))
-        candidates = candidate_picks(rows, history)
+        # Independent descriptive opponent metric: last 10 final games, not used as a probability multiplier.
+        try:
+            recent_games = db_query("""SELECT game_date, home_team, away_team, home_score, away_score
+                FROM nhl_games WHERE game_state IN ('OFF','FINAL')
+                AND home_score IS NOT NULL AND away_score IS NOT NULL
+                ORDER BY game_date DESC LIMIT 600""")
+            defense = opponent_defense(recent_games)
+        except Exception:
+            defense = {}
+            st.caption('Statistiques défensives adverses indisponibles ; suggestions calculées sans ce contexte.')
+        candidates = candidate_picks(rows, history, defense=defense)
     else:
         candidates = {name:[] for name in PROFILES}
         st.info('Aucune rencontre future éligible pour cette soirée. Essaie « Mixte » ou « Demain ». Si des effectifs NHL sont indisponibles, seuls les joueurs vérifiés peuvent apparaître.')
@@ -184,7 +235,16 @@ def show(rows, db_query):
                     with c2:
                         st.markdown(f"<div class='eh-pick-prob'>{pct_label(p['probability'])}</div><div class='eh-pick-prob-caption'>Estimation du modèle · non calibrée</div>",unsafe_allow_html=True)
                         st.progress(float(p['probability']))
-                        st.caption(f"Estimation du modèle · Historique : {p['hits']} réussites sur {p['sample']} matchs ({100*p['hits']/p['sample']:.0f} % observés)" if p['sample'] else 'Estimation du modèle · historique insuffisant')
+                        st.caption(f"Historique marché : {p['hits']}/{p['sample']} sur 10 matchs · {p['hits_5']}/{p['sample_5']} sur 5 matchs")
+                    st.caption(f"Série marché : {p['market_streak']:+d} · Points : {p['point_streak']:+d} · Buts : {p['goal_streak']:+d} (positif = réussite, négatif = échec)")
+                    with st.expander('📊 Forme récente et adversaire', expanded=False):
+                        st.write(f"Résultats du marché, récent → ancien : {' · '.join(map(str, p['recent_values']))}")
+                        defense_info = p.get('opponent_defense')
+                        if defense_info:
+                            st.write(f"{p['opponent']} : {defense_info['goals_against_avg']:.2f} buts encaissés / match sur {defense_info['games']} matchs terminés récents")
+                            st.caption('Indicateur défensif collectif descriptif : ne mesure pas les points accordés à un joueur et ne modifie pas la probabilité estimée.')
+                        else:
+                            st.caption('Données défensives adverses indisponibles.')
             chosen = [p for p, key in zip(picks, selected_keys)
                       if st.session_state.get(key, False)]
             st.caption(f'{len(chosen)} pick(s) sélectionné(s) sur {len(picks)}')
@@ -218,6 +278,10 @@ def show(rows, db_query):
                 display[column] = pd.to_datetime(display[column], utc=True, errors='coerce').dt.tz_convert(PARIS).dt.strftime('%d/%m/%Y · %Hh%M')
             display['status'] = display['status'].map(STATUSES).fillna(display['status'])
             display = display.rename(columns={'created_at':'Créé (Paris)','selection':'Sélection','probability':'Estimation','status':'Statut','kickoff':'Match (Paris)'})
+            status_filter = st.selectbox('Résultat historique', ['Tous', 'Gagné', 'Perdu', 'En attente', 'Annulé'], key='picks24_history_status')
+            if status_filter != 'Tous':
+                display = display[display['Statut'] == status_filter]
+            st.caption(f'{len(display)} ligne(s) affichée(s) · historique de mes picks suivis, distinct des prédictions automatiques V21')
             st.dataframe(display, hide_index=True,width='stretch')
         else:
             st.info('Pas encore de pick suivi pour ce profil.')
