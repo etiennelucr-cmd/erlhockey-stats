@@ -9,7 +9,7 @@ from auto_performance_v23 import certified_mask, summary as auto_summary
 
 def show():
     st.subheader('🤖 Prédictions automatiques · Bilan et suivi')
-    st.caption('Version du bilan : V25.1 · couleurs visibles + bilan V24.1')
+    st.caption('Version du bilan : V25.2 · couleurs appliquées aux cellules + bilan V24.1')
     st.caption('Les prédictions automatiques sont figées avant le match, même si tu ne les coches pas. '
                'Les choix personnels sont comptés séparément. Les taux excluent les matchs en attente et les annulations.')
     try:
@@ -71,21 +71,21 @@ def show():
                 cell = f'<span style="color:#8be2b3">{cell}</span>'
             elif col == 'Perdus':
                 cell = f'<span style="color:#ff9999">{cell}</span>'
-            cells.append(f'<td>{cell}</td>')
-        lines.append(f'<tr style="background-color:{bg}">' + ''.join(cells) + '</tr>')
+            cells.append(f'<td style="background-color:{bg} !important;color:#f4f6fa !important">{cell}</td>')
+        lines.append('<tr>' + ''.join(cells) + '</tr>')
     table_html = (
-        '<div class="eh-v251-table" style="overflow:auto;max-height:520px;border:1px solid #355979;border-radius:12px">'
+        '<div class="eh-v252-table" style="overflow:auto;max-height:520px;border:1px solid #355979;border-radius:12px">'
         '<table style="border-collapse:collapse;width:100%;min-width:760px;color:#f4f6fa;font-size:13px">'
         '<thead style="position:sticky;top:0;background:#25282d;z-index:1"><tr>' + headers + '</tr></thead>'
         '<tbody>' + ''.join(lines) + '</tbody></table></div>'
-        '<style>.eh-v251-table th,.eh-v251-table td{padding:9px 11px;text-align:left;'
+        '<style>.eh-v252-table th,.eh-v252-table td{padding:9px 11px;text-align:left;'
         'border-bottom:1px solid #42505d;white-space:nowrap}'
-        '.eh-v251-table th{font-weight:600;color:#e5e8ec}'
-        '.eh-v251-table tr:hover{filter:brightness(1.18)}</style>'
+        '.eh-v252-table th{font-weight:600;color:#e5e8ec}'
+        '.eh-v252-table tbody tr:hover td{filter:brightness(1.18)}</style>'
     )
     st.markdown(table_html, unsafe_allow_html=True)
 
-    with st.expander('🔎 Diagnostic du bilan V25.1'):
+    with st.expander('🔎 Diagnostic du bilan V25.2'):
         st.caption('Les picks automatiques historiques sont comptés dans le total global, sans certification rétroactive.')
         st.write('Statuts de validation :')
         st.dataframe(auto['validation_state'].fillna('(vide)').value_counts().rename_axis('Statut').reset_index(name='Nombre'),hide_index=True)
