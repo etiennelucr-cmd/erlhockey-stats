@@ -9,7 +9,7 @@ from auto_performance_v23 import certified_mask, summary as auto_summary
 
 def show():
     st.subheader('🤖 Prédictions automatiques · Bilan et suivi')
-    st.caption('Version du bilan : V24.1 · global + certifié + historique + mes choix')
+    st.caption('Version du bilan : V25 · couleurs par origine + bilan V24.1')
     st.caption('Les prédictions automatiques sont figées avant le match, même si tu ne les coches pas. '
                'Les choix personnels sont comptés séparément. Les taux excluent les matchs en attente et les annulations.')
     try:
@@ -47,8 +47,23 @@ def show():
         for label, frame in [('Automatique (tous)',auto),('Automatique certifié',certified),
                              ('Automatique historique',historical),('Mes choix',chosen)]:
             result.extend(auto_summary(frame,[profile],label).drop(columns=['Réussite (%)']).to_dict('records'))
-    st.dataframe(pd.DataFrame(result),hide_index=True,use_container_width=True)
-    with st.expander('🔎 Diagnostic du bilan V24.1'):
+    # Row-level color coding makes provenance readable without changing any metrics.
+    palette = {
+        'Automatique (tous)': ('rgba(48, 126, 218, 0.17)', '#8DC4FF'),
+        'Automatique certifié': ('rgba(30, 151, 104, 0.17)', '#70E2AE'),
+        'Automatique historique': ('rgba(191, 126, 29, 0.19)', '#FFD084'),
+        'Mes choix': ('rgba(137, 83, 205, 0.21)', '#D7B4FF'),
+    }
+    st.caption('🔵 Automatique (tous)  ·  🟢 Certifié  ·  🟠 Historique  ·  🟣 Mes choix')
+    result_df = pd.DataFrame(result)
+    def style_origin(row):
+        bg, fg = palette.get(row['Origine'], ('transparent', 'inherit'))
+        return [f'background-color: {bg}; color: {fg};' if col == 'Origine'
+                else f'background-color: {bg};' for col in row.index]
+    styled = result_df.style.apply(style_origin, axis=1)
+    st.dataframe(styled, hide_index=True, use_container_width=True)
+
+    with st.expander('🔎 Diagnostic du bilan V25'):
         st.caption('Les picks automatiques historiques sont comptés dans le total global, sans certification rétroactive.')
         st.write('Statuts de validation :')
         st.dataframe(auto['validation_state'].fillna('(vide)').value_counts().rename_axis('Statut').reset_index(name='Nombre'),hide_index=True)
